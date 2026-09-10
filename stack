@@ -1205,7 +1205,9 @@ backup_stack() (
     "$STACK_ROOT/stack" "$STACK_ROOT/scripts" "$STACK_ROOT"/compose*.yaml)
   if [ "${ENABLE_PROVISIONER:-0}" = "1" ]; then
     local signer="${STARTER_PACK_PRIVATE_KEY_PATH:-/etc/influence/secrets/starter_pack_admin_private_key}"
-    [ -r "$signer" ] && [ -s "$signer" ] || die "Cannot back up provisioner signer: $signer"
+    if [ ! -r "$signer" ] || [ ! -s "$signer" ]; then
+      die "Cannot back up provisioner signer: $signer"
+    fi
     backup_paths+=("$signer")
   fi
   local writers=(
