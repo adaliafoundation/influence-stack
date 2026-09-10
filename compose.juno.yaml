@@ -11,8 +11,7 @@ services:
       - mainnet
       - --db-path
       - /var/lib/juno
-      - --prune-mode
-      - ${JUNO_PRUNE_RETAINED_BLOCKS:-128}
+      - --prune-mode=${JUNO_PRUNE_RETAINED_BLOCKS:-128}
       - --prune-min-age
       - ${JUNO_PRUNE_MIN_AGE:-720h}
       - --http
