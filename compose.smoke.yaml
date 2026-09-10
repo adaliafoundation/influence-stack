@@ -1,0 +1,42 @@
+services:
+  influence-tools:
+    image: ${INFLUENCE_SERVER_IMAGE:?Set INFLUENCE_SERVER_IMAGE to an immutable image digest}
+    platform: linux/amd64
+
+  mongo:
+    volumes: !override
+      - smoke-mongodb:/data/db
+      - ./scripts/mongo-init-app-user.sh:/docker-entrypoint-initdb.d/10-app-user.sh:ro
+
+  redis:
+    volumes: !override
+      - smoke-redis:/data
+
+  elasticsearch:
+    environment:
+      ES_JAVA_OPTS: -Xms512m -Xmx512m
+    volumes: !override
+      - smoke-elasticsearch:/usr/share/elasticsearch/data
+
+volumes:
+  smoke-mongodb:
+  smoke-redis:
+  smoke-elasticsearch:
+
+secrets:
+  mongo_root_password:
+    file: ${INTEGRATION_SECRETS_DIR:?Set INTEGRATION_SECRETS_DIR}/mongo_root_password
+  mongo_app_password:
+    file: ${INTEGRATION_SECRETS_DIR:?Set INTEGRATION_SECRETS_DIR}/mongo_app_password
+  mongo_url:
+    file: ${INTEGRATION_SECRETS_DIR:?Set INTEGRATION_SECRETS_DIR}/mongo_url
+  redis_password:
+    file: ${INTEGRATION_SECRETS_DIR:?Set INTEGRATION_SECRETS_DIR}/redis_password
+  redis_url:
+    file: ${INTEGRATION_SECRETS_DIR:?Set INTEGRATION_SECRETS_DIR}/redis_url
+  elasticsearch_password:
+    file: ${INTEGRATION_SECRETS_DIR:?Set INTEGRATION_SECRETS_DIR}/elasticsearch_password
+  elasticsearch_url:
+    file: ${INTEGRATION_SECRETS_DIR:?Set INTEGRATION_SECRETS_DIR}/elasticsearch_url
+  alchemy_influence_ethereum_http_url:
+    file: ${INTEGRATION_SECRETS_DIR:?Set INTEGRATION_SECRETS_DIR}/alchemy_influence_ethereum_http_url

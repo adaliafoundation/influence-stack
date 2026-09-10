@@ -1,0 +1,1259 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+STACK_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ENV_FILE="${STACK_ROOT}/.env"
+STATE_DIR="${STACK_ROOT}/.state"
+INTEGRATION_RECEIPT="${STATE_DIR}/server-integration-test"
+
+die() {
+  echo "Error: $*" >&2
+  exit 1
+}
+
+info() {
+  echo "==> $*"
+}
+
+usage() {
+  cat <<'EOF'
+Usage: ./stack <command> [options]
+
+Commands:
+  init                  Create local configuration and service secrets
+  install-secret NAME [PATH]
+                        Prompt for, or import, a provider/application secret
+  prepare-host          Create and permission persistent data directories
+  install-signer-key    Install the Starknet signer key with protected permissions
+  config                Validate and render the production Compose config
+  integration-test IMAGE
+                        Test an immutable server image with disposable local stores
+  prepare-juno          Seed and synchronize Juno before obtaining a Mongo dump
+  bootstrap             Restore a Mongo dump, seed Juno, rebuild search, and catch up
+  deploy                Start an already-bootstrapped production stack
+  update                Pull current images and recreate the production stack
+  restart-juno          Gracefully restart Juno and gate the Starknet retriever
+  upgrade-juno          Safely apply a changed immutable Juno image pin
+  status                Show service and convergence status
+  logs [service]        Follow all logs or one Compose service
+  backup                Create a compressed MongoDB archive
+
+Bootstrap options:
+  --mongo-dump PATH     Compressed mongodump archive for a fresh deployment
+  --rebuild-packed-cache
+                        Recompute packed lot data after restoring MongoDB
+EOF
+}
+
+require_command() {
+  command -v "$1" >/dev/null 2>&1 || die "Required command not found: $1"
+}
+
+load_env() {
+  [ -f "$ENV_FILE" ] || die "Missing .env. Run ./stack init first."
+  local line
+  local key
+  local value
+  while IFS= read -r line || [ -n "$line" ]; do
+    line="${line%$'\r'}"
+    case "$line" in
+      ''|'#'*) continue ;;
+      *=*) ;;
+      *) die "Invalid line in .env: $line" ;;
+    esac
+
+    key="${line%%=*}"
+    value="${line#*=}"
+    [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || die "Invalid variable name in .env: $key"
+    if [[ "$value" =~ ^\".*\"$ ]] || [[ "$value" =~ ^\'.*\'$ ]]; then
+      value="${value:1:${#value}-2}"
+    fi
+    export "$key=$value"
+  done < "$ENV_FILE"
+  prepare_optional_secret_paths
+}
+
+compose_files() {
+  export HOST_UID="${HOST_UID:-$(id -u)}"
+  export HOST_GID="${HOST_GID:-$(id -g)}"
+  COMPOSE_ARGS=(--env-file "$ENV_FILE" -f "${STACK_ROOT}/compose.yaml")
+  if [ "${ENABLE_PROVISIONER:-0}" = "1" ]; then
+    COMPOSE_ARGS+=(-f "${STACK_ROOT}/compose.provisioner.yaml")
+  fi
+}
+
+compose() {
+  docker compose "${COMPOSE_ARGS[@]}" "$@"
+}
+
+secret_file() {
+  printf '%s/secrets/%s' "$STACK_ROOT" "$1"
+}
+
+prepare_optional_secret_paths() {
+  local name
+  local variable
+  while read -r variable name; do
+    unset "$variable"
+    if [ -s "$(secret_file "$name")" ]; then
+      export "$variable=/run/secrets/$name"
+    fi
+  done <<'EOF'
+ARGENT_API_KEY_FILE argent_api_key
+IPFS_INFURA_API_KEY_FILE ipfs_infura_api_key
+IPFS_INFURA_API_KEY_SECRET_FILE ipfs_infura_api_key_secret
+OPEN_SEA_API_KEY_FILE open_sea_api_key
+SENDGRID_API_KEY_FILE sendgrid_api_key
+STRIPE_SECRET_KEY_FILE stripe_secret_key
+STRIPE_WEBHOOK_SECRET_FILE stripe_webhook_secret
+AVNU_PAYMASTER_API_KEY_FILE avnu_paymaster_api_key
+BANXA_API_KEY_FILE banxa_api_key
+BANXA_WEBHOOK_API_KEY_FILE banxa_webhook_api_key
+BANXA_WEBHOOK_SECRET_FILE banxa_webhook_secret
+EOF
+}
+
+generate_secret() {
+  local destination
+  destination="$(secret_file "$1")"
+  if [ ! -s "$destination" ]; then
+    umask 077
+    openssl rand -hex 32 > "$destination"
+  fi
+  chmod 600 "$destination"
+}
+
+write_derived_secret() {
+  local destination
+  local temporary
+  destination="$(secret_file "$1")"
+  temporary="$(mktemp "${destination}.XXXXXX")"
+  printf '%s\n' "$2" > "$temporary"
+  chmod 600 "$temporary"
+  mv "$temporary" "$destination"
+}
+
+refresh_connection_secrets() {
+  local elasticsearch_password
+  local mongo_password
+  local name
+  local redis_password
+  for name in mongo_app_password redis_password elasticsearch_password; do
+    [ -s "$(secret_file "$name")" ] \
+      || die "Missing service secret: $name (run ./stack init first)"
+  done
+  mongo_password="$(tr -d '\r\n' < "$(secret_file mongo_app_password)")"
+  redis_password="$(tr -d '\r\n' < "$(secret_file redis_password)")"
+  elasticsearch_password="$(tr -d '\r\n' < "$(secret_file elasticsearch_password)")"
+  case "${MONGO_APP_USERNAME:-influence}${MONGO_DATABASE:-influence}${mongo_password}${redis_password}${elasticsearch_password}" in
+    *[!A-Za-z0-9._~-]*) die "Database names, users, and generated passwords must be URL-safe" ;;
+  esac
+  write_derived_secret mongo_url \
+    "mongodb://${MONGO_APP_USERNAME:-influence}:${mongo_password}@mongo:27017/${MONGO_DATABASE:-influence}?authSource=${MONGO_DATABASE:-influence}"
+  write_derived_secret redis_url "redis://:${redis_password}@redis:6379"
+  write_derived_secret elasticsearch_url \
+    "http://elastic:${elasticsearch_password}@elasticsearch:9200"
+}
+
+ensure_secret_file() {
+  local destination
+  destination="$(secret_file "$1")"
+  if [ ! -e "$destination" ]; then
+    umask 077
+    : > "$destination"
+  fi
+  chmod 600 "$destination"
+}
+
+migrate_env_secret() {
+  local variable="$1"
+  local name="$2"
+  local value="${!variable:-}"
+  local destination
+  destination="$(secret_file "$name")"
+
+  if [ -n "$value" ] && [ ! -s "$destination" ]; then
+    umask 077
+    printf '%s' "$value" > "$destination"
+  fi
+  ensure_secret_file "$name"
+  if grep -q "^${variable}=" "$ENV_FILE"; then
+    replace_env_value "$variable" ""
+  fi
+}
+
+validate_secret_file() {
+  local name="$1"
+  local destination
+  local permissions
+  destination="$(secret_file "$name")"
+  [ -s "$destination" ] || { echo "Secret required: $name (run ./stack install-secret $name)" >&2; return 1; }
+  permissions="$(file_permissions "$destination")"
+  case "$permissions" in
+    400|600) ;;
+    *) echo "Secret must be owner-only (mode 0400 or 0600): $destination" >&2; return 1 ;;
+  esac
+}
+
+validate_image_pin() {
+  local variable="$1"
+  local value="${!variable:-}"
+  [[ "$value" =~ ^[A-Za-z0-9._:/-]+@sha256:[0-9a-f]{64}$ ]] \
+    || die "$variable must be pinned to an immutable sha256 digest"
+  [[ ! "$value" =~ @sha256:0{64}$ ]] \
+    || die "$variable still contains the example digest"
+}
+
+validate_application_images() {
+  local rendered
+  rendered="$(compose --profile indexer --profile auditor --profile tools config --format json)"
+  jq -e --arg image "$INFLUENCE_SERVER_IMAGE" '
+    [
+      .services["influence-server"],
+      .services["influence-indexer"],
+      .services["influence-ethereum-event-retriever"],
+      .services["influence-starknet-event-retriever"],
+      .services["influence-event-processor"],
+      .services["influence-event-auditor"],
+      .services["influence-agreement-auditor"],
+      .services["influence-tools"]
+    ] | all(.image == $image)
+  ' <<<"$rendered" >/dev/null \
+    || die "Every Influence service must use INFLUENCE_SERVER_IMAGE"
+}
+
+deployment_fingerprint() {
+  local file
+  local files=(
+    stack
+    compose.yaml
+    compose.juno.yaml
+    compose.provisioner.yaml
+    compose.smoke.yaml
+    config/Caddyfile
+    scripts/juno-entrypoint.sh
+    scripts/mongo-init-app-user.sh
+  )
+  {
+    compose --profile indexer --profile auditor --profile tools config --format json
+    for file in "${files[@]}"; do
+      printf '\0%s\0' "$file"
+      command cat "${STACK_ROOT}/${file}"
+    done
+  } | openssl dgst -sha256 | awk '{ print $NF }'
+}
+
+record_integration_test() {
+  local image="$1"
+  local fingerprint="$2"
+  local temporary
+  mkdir -p "$STATE_DIR"
+  chmod 700 "$STATE_DIR"
+  temporary="$(mktemp "${INTEGRATION_RECEIPT}.XXXXXX")"
+  printf 'image=%s\nfingerprint=%s\n' "$image" "$fingerprint" > "$temporary"
+  chmod 600 "$temporary"
+  mv "$temporary" "$INTEGRATION_RECEIPT"
+}
+
+require_integration_test() {
+  local current_fingerprint
+  local tested_fingerprint
+  local tested_image
+  [ -s "$INTEGRATION_RECEIPT" ] \
+    || die "Run ./stack integration-test \"$INFLUENCE_SERVER_IMAGE\" before deploying"
+  tested_image="$(awk -F= '$1 == "image" { sub(/^[^=]*=/, ""); print; exit }' "$INTEGRATION_RECEIPT")"
+  tested_fingerprint="$(awk -F= '$1 == "fingerprint" { print $2; exit }' "$INTEGRATION_RECEIPT")"
+  [ "$tested_image" = "$INFLUENCE_SERVER_IMAGE" ] \
+    || die "The selected Influence server image has not passed this stack's integration test"
+  current_fingerprint="$(deployment_fingerprint)"
+  [ "$tested_fingerprint" = "$current_fingerprint" ] \
+    || die "The stack configuration changed after its last integration test; run it again"
+}
+
+replace_env_value() {
+  local key="$1"
+  local value="$2"
+  local temporary
+  temporary="$(mktemp "${ENV_FILE}.XXXXXX")"
+  awk -F= -v key="$key" -v value="$value" '
+    BEGIN { OFS = "=" }
+    $1 == key { print key, value; next }
+    { print }
+  ' "$ENV_FILE" > "$temporary"
+  mv "$temporary" "$ENV_FILE"
+}
+
+ensure_env_from_example() {
+  local key="$1"
+  local example_value
+  grep -q "^${key}=" "$ENV_FILE" && return 0
+  grep -q "^${key}=" "${STACK_ROOT}/.env.example" \
+    || die "Missing $key default in .env.example"
+  example_value="$(awk -F= -v key="$key" '$1 == key { sub(/^[^=]*=/, ""); print; exit }' "${STACK_ROOT}/.env.example")"
+  printf '%s=%s\n' "$key" "$example_value" >> "$ENV_FILE"
+  export "$key=$example_value"
+}
+
+validate_data_root() {
+  case "${DATA_ROOT:-}" in
+    /*) ;;
+    *) die "DATA_ROOT must be an absolute path" ;;
+  esac
+  [ "$DATA_ROOT" != "/" ] || die "DATA_ROOT cannot be /"
+  [ "$DATA_ROOT" != "${HOME:-}" ] || die "DATA_ROOT cannot be the home directory"
+}
+
+file_permissions() {
+  if stat -c '%a' "$1" >/dev/null 2>&1; then
+    stat -c '%a' "$1"
+  else
+    stat -f '%Lp' "$1"
+  fi
+}
+
+validate_juno_configuration() {
+  [ -n "${JUNO_SNAPSHOT_URL:-}" ] || die "Configuration required: JUNO_SNAPSHOT_URL"
+  validate_image_pin JUNO_IMAGE
+  [[ "${JUNO_SNAPSHOT_EXPECTED_VERSION:-}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+    || die "JUNO_SNAPSHOT_EXPECTED_VERSION must be a stable release such as v0.16.6"
+  [[ "${JUNO_IMAGE:-}" == *":${JUNO_SNAPSHOT_EXPECTED_VERSION}@sha256:"* ]] \
+    || die "JUNO_IMAGE and JUNO_SNAPSHOT_EXPECTED_VERSION must pin the same release"
+  [[ "${JUNO_PRUNE_RETAINED_BLOCKS:-128}" =~ ^[0-9]+$ ]] \
+    || die "JUNO_PRUNE_RETAINED_BLOCKS must be a non-negative integer"
+  [[ "${JUNO_PRUNE_MIN_AGE:-720h}" =~ ^([0-9]+)h$ ]] \
+    || die "JUNO_PRUNE_MIN_AGE must be expressed as whole hours (for example, 720h)"
+  (( BASH_REMATCH[1] >= 720 )) || die "JUNO_PRUNE_MIN_AGE must retain at least 720 hours"
+  [[ "${JUNO_SNAPSHOT_EXTRACTION_RESERVE_GB:-200}" =~ ^[0-9]+$ ]] \
+    || die "JUNO_SNAPSHOT_EXTRACTION_RESERVE_GB must be a non-negative integer"
+  case "${JUNO_SNAPSHOT_KIND:-pruned}" in
+    full|pruned) ;;
+    *) die "JUNO_SNAPSHOT_KIND must be full or pruned" ;;
+  esac
+
+  validate_secret_file alchemy_juno_ethereum_ws_url || die "Invalid Juno credential"
+  [[ "$(<"$(secret_file alchemy_juno_ethereum_ws_url)")" == wss://* ]] \
+    || die "alchemy_juno_ethereum_ws_url must contain a wss:// URL"
+}
+
+validate_configuration() {
+  validate_juno_configuration
+  local invalid=0
+  local variable
+  local value
+  for variable in API_DOMAIN CADDY_EMAIL CLIENT_URL BRIDGE_CLIENT_URL IMAGES_SERVER_URL; do
+    if [ -z "${!variable:-}" ] || [[ "${!variable}" == *example.com* ]] || [[ "${!variable}" == *replace-me* ]]; then
+      echo "Configuration required: $variable" >&2
+      invalid=1
+    fi
+  done
+
+  for variable in INFLUENCE_SERVER_IMAGE CADDY_IMAGE MONGO_IMAGE REDIS_IMAGE \
+    ELASTICSEARCH_IMAGE; do
+    validate_image_pin "$variable"
+  done
+
+  for variable in MONGO_INITDB_ROOT_USERNAME MONGO_DATABASE MONGO_APP_USERNAME \
+    MONGO_RESTORE_SOURCE_DATABASE; do
+    value="${!variable:-}"
+    case "$value" in
+      ''|*[!A-Za-z0-9._~-]*) die "$variable contains unsupported characters" ;;
+    esac
+  done
+
+  for variable in mongo_root_password mongo_app_password mongo_url redis_password redis_url \
+    elasticsearch_password elasticsearch_url jwt_secret \
+    alchemy_influence_ethereum_http_url; do
+    validate_secret_file "$variable" || invalid=1
+  done
+  if [ -s "$(secret_file alchemy_influence_ethereum_http_url)" ] \
+    && [[ "$(<"$(secret_file alchemy_influence_ethereum_http_url)")" != https://* ]]; then
+    echo "alchemy_influence_ethereum_http_url must contain an https:// URL" >&2
+    invalid=1
+  fi
+
+  if { [ "${STARTER_PACK_PROVISIONER_ENABLED:-0}" = "1" ] \
+    || [ "${CREWMATE_PROVISIONER_ENABLED:-0}" = "1" ]; } \
+    && [ "${ENABLE_PROVISIONER:-0}" != "1" ]; then
+    die "A provisioner feature is enabled but ENABLE_PROVISIONER is not 1"
+  fi
+
+  if [ "${ENABLE_PROVISIONER:-0}" = "1" ]; then
+    local key_path="${STARTER_PACK_PRIVATE_KEY_PATH:-/etc/influence/secrets/starter_pack_admin_private_key}"
+    local key_permissions
+    [ -s "$key_path" ] || die "Provisioner enabled but key file is missing or empty: $key_path"
+    key_permissions="$(file_permissions "$key_path")"
+    case "$key_permissions" in
+      400|600) ;;
+      *) die "Provisioner key must be readable only by its owner (mode 0400 or 0600): $key_path" ;;
+    esac
+    [ "${STARTER_PACK_PROVISIONER_ENABLED:-0}" = "1" ] \
+      || [ "${CREWMATE_PROVISIONER_ENABLED:-0}" = "1" ] \
+      || die "ENABLE_PROVISIONER=1 but no provisioner feature is enabled"
+
+    for variable in STARKNET_STARTER_PACK_ADMIN; do
+      [ -n "${!variable:-}" ] || { echo "Configuration required: $variable" >&2; invalid=1; }
+    done
+    validate_secret_file stripe_secret_key || invalid=1
+    validate_secret_file stripe_webhook_secret || invalid=1
+    if [ "${STARTER_PACK_PROVISIONER_ENABLED:-0}" = "1" ]; then
+      for variable in STRIPE_STARTER_PACK_EXPLORER_PRODUCT_ID \
+        STRIPE_STARTER_PACK_STRATEGIST_PRODUCT_ID STRIPE_STARTER_PACK_INDUSTRIALIST_PRODUCT_ID; do
+        [ -n "${!variable:-}" ] || { echo "Configuration required: $variable" >&2; invalid=1; }
+      done
+    fi
+    if [ "${CREWMATE_PROVISIONER_ENABLED:-0}" = "1" ]; then
+      [ -n "${STRIPE_CREWMATE_PRODUCT_ID:-}" ] \
+        || { echo "Configuration required: STRIPE_CREWMATE_PRODUCT_ID" >&2; invalid=1; }
+    fi
+  fi
+
+  if [ "${AVNU_PAYMASTER_ENABLED:-0}" = "1" ]; then
+    validate_secret_file avnu_paymaster_api_key || invalid=1
+  fi
+
+  if [ "${BANXA_CHECKOUT_ENABLED:-0}" = "1" ]; then
+    for variable in BANXA_PARTNER_REF; do
+      [ -n "${!variable:-}" ] || { echo "Configuration required: $variable" >&2; invalid=1; }
+    done
+    validate_secret_file banxa_api_key || invalid=1
+    validate_secret_file banxa_webhook_api_key || invalid=1
+    validate_secret_file banxa_webhook_secret || invalid=1
+  fi
+
+  if [ "${NOTIFICATIONS_EMAIL_ENABLED:-0}" = "1" ]; then
+    validate_secret_file sendgrid_api_key || invalid=1
+  fi
+
+  [ "$invalid" -eq 0 ] || die "Complete .env before deploying"
+}
+
+service_health() {
+  local service="$1"
+  local container_id
+  container_id="$(compose ps -q "$service")"
+  [ -n "$container_id" ] || return 1
+  docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$container_id"
+}
+
+wait_for_health() {
+  local service="$1"
+  local timeout="${2:-300}"
+  local started_at="$SECONDS"
+  local health
+  info "Waiting for $service"
+  while (( SECONDS - started_at < timeout )); do
+    health="$(service_health "$service" 2>/dev/null || true)"
+    if [ "$health" = "healthy" ] || [ "$health" = "running" ]; then
+      return 0
+    fi
+    [ "$health" != "unhealthy" ] || die "$service became unhealthy"
+    sleep 5
+  done
+  die "Timed out waiting for $service"
+}
+
+wait_for_required_workers() {
+  local service
+  for service in \
+    influence-indexer \
+    influence-ethereum-event-retriever \
+    influence-starknet-event-retriever \
+    influence-event-processor; do
+    wait_for_health "$service" 600
+  done
+}
+
+wait_for_required_application_health() {
+  wait_for_required_workers
+  wait_for_health influence-server 600
+}
+
+juno_rpc() {
+  local method="$1"
+  curl -fsS \
+    -H 'content-type: application/json' \
+    --data "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"${method}\",\"params\":[]}" \
+    "http://127.0.0.1:${JUNO_HOST_PORT:-6060}/${JUNO_RPC_VERSION:-v0_8}"
+}
+
+juno_block() {
+  juno_rpc starknet_blockNumber | jq -er '.result | if type == "string" then tonumber else . end'
+}
+
+juno_has_block() {
+  local block="$1"
+  curl -fsS \
+    -H 'content-type: application/json' \
+    --data "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"starknet_getBlockWithTxHashes\",\"params\":[{\"block_number\":${block}}]}" \
+    "http://127.0.0.1:${JUNO_HOST_PORT:-6060}/${JUNO_RPC_VERSION:-v0_8}" \
+    | jq -e --argjson block "$block" '.result.block_number == $block' >/dev/null
+}
+
+ethereum_block() {
+  local result
+  local provider
+  provider="$(<"$(secret_file alchemy_influence_ethereum_http_url)")"
+  result="$(curl -fsS \
+    -H 'content-type: application/json' \
+    --data '{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}' \
+    "$provider" | jq -er '.result')"
+  printf '%d\n' "$((result))"
+}
+
+mongo_metrics() {
+  local script
+  script=$(cat <<'EOF'
+require('module-alias/register');
+require('@common/storage/db');
+const { mongoose } = require('@common/storage/db');
+const { EthereumBlockCache, StarknetBlockCache } = require('@common/lib/cache');
+(async () => {
+  const result = {
+    ethereumCheckpoint: Number(await EthereumBlockCache.getLastRetrievedBlock()),
+    starknetCheckpoint: Number(await StarknetBlockCache.getLastRetrievedBlock()),
+    entities: await mongoose.model('Entity').estimatedDocumentCount(),
+    packedLotCacheEntries: await mongoose.connection.collection('keyv')
+      .countDocuments({ key: /^keyv:ASTEROID_LOTS_/ }),
+    indexQueue: await mongoose.model('IndexItem').countDocuments({}),
+    unprocessedEvents: await mongoose.model('Event').countDocuments({ lastProcessed: null, removed: { $ne: true } })
+  };
+  console.log(JSON.stringify(result));
+  await mongoose.disconnect();
+})().catch((error) => { console.error(error); process.exit(1); });
+EOF
+)
+  compose --profile tools run --rm --no-deps influence-tools -e "$script" | tail -n 1
+}
+
+wait_for_juno() {
+  local timeout="${JUNO_SYNC_TIMEOUT_SECONDS:-21600}"
+  local started_at="$SECONDS"
+  local syncing
+  info "Waiting for Juno to finish snapshot migration and synchronize"
+  while (( SECONDS - started_at < timeout )); do
+    syncing="$(juno_rpc starknet_syncing 2>/dev/null | jq -c '.result' 2>/dev/null || true)"
+    if [ "$syncing" = "false" ] \
+      && curl -fsS "http://127.0.0.1:${JUNO_HOST_PORT:-6060}/ready/sync" >/dev/null 2>&1; then
+      info "Juno synchronized at block $(juno_block)"
+      return 0
+    fi
+    sleep 15
+  done
+  die "Timed out waiting for Juno synchronization"
+}
+
+install_juno_snapshot() {
+  local juno_dir="${DATA_ROOT}/juno-data"
+  local download_dir="${DATA_ROOT}/downloads"
+  local archive="${download_dir}/juno-mainnet.tar.zst"
+  local partial_metadata="${archive}.part.metadata"
+  local headers
+  local content_length
+  local disposition
+  local snapshot_identity
+  local downloaded_bytes=0
+  local available_kb
+  local required_kb
+  local reserve_gb="${JUNO_SNAPSHOT_EXTRACTION_RESERVE_GB:-200}"
+  local stage
+  local source_dir
+  local items
+
+  if [ -n "$(find "$juno_dir" -mindepth 1 -print -quit)" ]; then
+    info "Using existing Juno data in $juno_dir"
+    return 0
+  fi
+
+  info "Inspecting the Juno mainnet snapshot"
+  headers="$(curl -fsSIL "$JUNO_SNAPSHOT_URL")"
+  content_length="$(awk 'BEGIN { IGNORECASE=1 } /^content-length:/ { gsub("\\r", "", $2); size=$2 } END { print size }' <<<"$headers")"
+  disposition="$(awk 'BEGIN { IGNORECASE=1 } /^content-disposition:/ { gsub("\\r", ""); value=$0 } END { print value }' <<<"$headers")"
+  [[ "$content_length" =~ ^[0-9]+$ ]] || die "Snapshot server did not provide a content length"
+  [[ "$disposition" == *"${JUNO_SNAPSHOT_EXPECTED_VERSION:-v0.16.6}"* ]] \
+    || die "Snapshot does not match JUNO_SNAPSHOT_EXPECTED_VERSION"
+  case "${JUNO_SNAPSHOT_KIND:-pruned}:$disposition" in
+    full:*_pruned_*) die "Expected a full Juno snapshot but the server returned a pruned snapshot" ;;
+    pruned:*_pruned_*) ;;
+    pruned:*) die "Expected a pruned Juno snapshot but the server returned a full snapshot" ;;
+  esac
+
+  snapshot_identity="${JUNO_SNAPSHOT_URL}|${content_length}|${disposition}"
+
+  if [ -f "${archive}.part" ]; then
+    if [ ! -f "$partial_metadata" ] || [ "$(<"$partial_metadata")" != "$snapshot_identity" ]; then
+      die "Partial snapshot metadata no longer matches the upstream archive; remove the partial download before retrying"
+    fi
+    downloaded_bytes="$(wc -c < "${archive}.part")"
+  else
+    printf '%s\n' "$snapshot_identity" > "$partial_metadata"
+  fi
+  (( downloaded_bytes <= content_length )) || die "Partial snapshot is larger than the remote archive"
+  available_kb="$(df -Pk "$DATA_ROOT" | awk 'NR == 2 { print $4 }')"
+  required_kb="$(( (content_length - downloaded_bytes + 1023) / 1024 + reserve_gb * 1024 * 1024 ))"
+  (( available_kb >= required_kb )) \
+    || die "Insufficient free space for the snapshot download and extraction reserve"
+
+  info "Downloading the Juno mainnet snapshot (resumable)"
+  curl -fL --retry 5 --retry-delay 5 --continue-at - \
+    --output "${archive}.part" "$JUNO_SNAPSHOT_URL"
+  [ "$(wc -c < "${archive}.part")" -eq "$content_length" ] \
+    || die "Downloaded snapshot size does not match the server metadata"
+  mv "${archive}.part" "$archive"
+  rm -f "$partial_metadata"
+
+  if [ -n "${JUNO_SNAPSHOT_SHA256:-}" ]; then
+    info "Verifying Juno snapshot checksum"
+    printf '%s  %s\n' "$JUNO_SNAPSHOT_SHA256" "$archive" | sha256sum --check -
+  else
+    echo "Warning: JUNO_SNAPSHOT_SHA256 is unset; relying on TLS and Juno database validation." >&2
+  fi
+
+  stage="$(mktemp -d "${DATA_ROOT}/.juno-stage.XXXXXX")"
+  info "Extracting the Juno snapshot"
+  tar --use-compress-program=unzstd -xf "$archive" -C "$stage"
+
+  source_dir="$stage"
+  if [ -d "${stage}/juno_mainnet" ]; then
+    source_dir="${stage}/juno_mainnet"
+  elif [ -d "${stage}/juno_mainnet_pruned" ]; then
+    source_dir="${stage}/juno_mainnet_pruned"
+  fi
+
+  shopt -s dotglob nullglob
+  items=("${source_dir}"/*)
+  shopt -u dotglob nullglob
+  [ "${#items[@]}" -gt 0 ] || die "Juno snapshot extracted no database files"
+  mv "${items[@]}" "$juno_dir/"
+  rm -f "$archive"
+  rm -rf -- "$stage"
+}
+
+restore_mongo() {
+  local dump_path="$1"
+  [ -f "$dump_path" ] || die "Mongo dump not found: $dump_path"
+  dump_path="$(cd "$(dirname "$dump_path")" && pwd)/$(basename "$dump_path")"
+  info "Restoring MongoDB from $(basename "$dump_path")"
+  # The quoted script expands inside mongo-tools, not in this operator shell.
+  # shellcheck disable=SC2016
+  compose --profile tools run --rm --no-deps \
+    --volume "${dump_path}:/restore/influence.archive:ro" \
+    mongo-tools sh -ec '
+      password="$(tr -d "\r\n" < /run/secrets/mongo_root_password)"
+      uri="mongodb://${MONGO_INITDB_ROOT_USERNAME}:${password}@mongo:27017/admin?authSource=admin"
+      mongorestore --uri="$uri" --archive=/restore/influence.archive --gzip --drop \
+        --nsFrom="${MONGO_RESTORE_SOURCE_DATABASE}.*" --nsTo="${MONGO_DATABASE}.*"
+    '
+}
+
+reset_elasticsearch() {
+  local indices
+  local index
+  indices="$(compose exec -T elasticsearch sh -ec '
+    password="$(tr -d "\r\n" < /run/secrets/elasticsearch_password)"
+    curl -fsS -u "elastic:${password}" "http://localhost:9200/_cat/indices?h=index"
+  ')"
+
+  while IFS= read -r index; do
+    [ -n "$index" ] || continue
+    case "$index" in
+      .*) continue ;;
+      *[!A-Za-z0-9._-]*) die "Refusing to delete unexpected Elasticsearch index name: $index" ;;
+    esac
+    compose exec -T elasticsearch sh -ec '
+      password="$(tr -d "\r\n" < /run/secrets/elasticsearch_password)"
+      curl -fsS -u "elastic:${password}" -X DELETE "http://localhost:9200/$1"
+    ' sh "$index" >/dev/null
+  done <<<"$indices"
+}
+
+wait_for_convergence() {
+  local timeout="${INFLUENCE_CATCHUP_TIMEOUT_SECONDS:-21600}"
+  local max_lag="${CATCHUP_MAX_LAG_BLOCKS:-20}"
+  local started_at="$SECONDS"
+  local metrics
+  local ethereum_head
+  local starknet_head
+  local ethereum_checkpoint
+  local starknet_checkpoint
+  local queue
+  local unprocessed
+  local ethereum_lag
+  local starknet_lag
+
+  info "Waiting for Influence workers to catch up"
+  while (( SECONDS - started_at < timeout )); do
+    metrics="$(mongo_metrics 2>/dev/null || true)"
+    ethereum_head="$(ethereum_block 2>/dev/null || true)"
+    starknet_head="$(juno_block 2>/dev/null || true)"
+    if [ -n "$metrics" ] && [ -n "$ethereum_head" ] && [ -n "$starknet_head" ] \
+      && jq -e '[.ethereumCheckpoint, .starknetCheckpoint, .indexQueue, .unprocessedEvents]
+        | all(type == "number")' <<<"$metrics" >/dev/null 2>&1; then
+      ethereum_checkpoint="$(jq -r '.ethereumCheckpoint' <<<"$metrics")"
+      starknet_checkpoint="$(jq -r '.starknetCheckpoint' <<<"$metrics")"
+      queue="$(jq -r '.indexQueue' <<<"$metrics")"
+      unprocessed="$(jq -r '.unprocessedEvents' <<<"$metrics")"
+      ethereum_lag="$((ethereum_head - ethereum_checkpoint))"
+      starknet_lag="$((starknet_head - starknet_checkpoint))"
+      printf '    ethereum lag=%s, starknet lag=%s, events=%s, index queue=%s\n' \
+        "$ethereum_lag" "$starknet_lag" "$unprocessed" "$queue"
+      if (( ethereum_lag >= 0 && ethereum_lag <= max_lag \
+        && starknet_lag >= 0 && starknet_lag <= max_lag \
+        && unprocessed == 0 && queue == 0 )); then
+        return 0
+      fi
+    fi
+    sleep 15
+  done
+  die "Timed out waiting for Influence convergence"
+}
+
+init_stack() {
+  require_command openssl
+  if [ ! -f "$ENV_FILE" ]; then
+    cp "${STACK_ROOT}/.env.example" "$ENV_FILE"
+  fi
+  chmod 600 "$ENV_FILE"
+  mkdir -p "${STACK_ROOT}/secrets" "$STATE_DIR"
+  chmod 700 "${STACK_ROOT}/secrets" "$STATE_DIR"
+  load_env
+  while IFS= read -r variable; do
+    ensure_env_from_example "$variable"
+  done < <(sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p' "${STACK_ROOT}/.env.example")
+  generate_secret mongo_root_password
+  generate_secret mongo_app_password
+  generate_secret redis_password
+  migrate_env_secret JWT_SECRET jwt_secret
+  generate_secret jwt_secret
+  generate_secret elasticsearch_password
+  refresh_connection_secrets
+  migrate_env_secret ALCHEMY_JUNO_ETHEREUM_WS_URL alchemy_juno_ethereum_ws_url
+  migrate_env_secret ALCHEMY_INFLUENCE_ETHEREUM_HTTP_URL alchemy_influence_ethereum_http_url
+  migrate_env_secret ARGENT_API_KEY argent_api_key
+  migrate_env_secret IPFS_INFURA_API_KEY ipfs_infura_api_key
+  migrate_env_secret IPFS_INFURA_API_KEY_SECRET ipfs_infura_api_key_secret
+  migrate_env_secret OPEN_SEA_API_KEY open_sea_api_key
+  migrate_env_secret SENDGRID_API_KEY sendgrid_api_key
+  migrate_env_secret STRIPE_SECRET_KEY stripe_secret_key
+  migrate_env_secret STRIPE_WEBHOOK_SECRET stripe_webhook_secret
+  migrate_env_secret AVNU_PAYMASTER_API_KEY avnu_paymaster_api_key
+  migrate_env_secret BANXA_API_KEY banxa_api_key
+  migrate_env_secret BANXA_WEBHOOK_API_KEY banxa_webhook_api_key
+  migrate_env_secret BANXA_WEBHOOK_SECRET banxa_webhook_secret
+  chmod 600 "$ENV_FILE"
+  info "Initialized .env and local service secrets"
+  echo "Next: install both Alchemy URLs, edit .env, then run ./stack prepare-host and ./stack config"
+}
+
+install_secret() {
+  [ "$#" -ge 1 ] && [ "$#" -le 2 ] \
+    || die "Usage: ./stack install-secret NAME [PATH]"
+  local name="$1"
+  local source="${2:-}"
+  local destination
+  case "$name" in
+    alchemy_juno_ethereum_ws_url|alchemy_influence_ethereum_http_url|jwt_secret|\
+    argent_api_key|ipfs_infura_api_key|ipfs_infura_api_key_secret|open_sea_api_key|\
+    sendgrid_api_key|stripe_secret_key|stripe_webhook_secret|\
+    avnu_paymaster_api_key|banxa_api_key|banxa_webhook_api_key|banxa_webhook_secret) ;;
+    *) die "Unsupported secret name: $name" ;;
+  esac
+  destination="$(secret_file "$name")"
+  mkdir -p "${STACK_ROOT}/secrets"
+  chmod 700 "${STACK_ROOT}/secrets"
+  umask 077
+  if [ -n "$source" ]; then
+    [ -s "$source" ] || die "Secret source is missing or empty: $source"
+    [ "$source" != "$destination" ] || die "Secret is already installed"
+    tr -d '\r\n' < "$source" > "${destination}.new"
+  else
+    local value
+    read -r -s -p "Enter $name: " value
+    echo
+    printf '%s' "$value" > "${destination}.new"
+  fi
+  [ -s "${destination}.new" ] || die "Secret became empty after removing line endings"
+  mv "${destination}.new" "$destination"
+  chmod 600 "$destination"
+  info "Installed secret: $name"
+}
+
+prepare_host() {
+  load_env
+  validate_data_root
+  local owner_group
+  owner_group="$(id -u):$(id -g)"
+  info "Preparing persistent storage under $DATA_ROOT"
+  sudo install -d -m 0750 -o "$(id -u)" -g "$(id -g)" \
+    "$DATA_ROOT" "$DATA_ROOT/juno-data" "$DATA_ROOT/downloads" "$DATA_ROOT/backups"
+  sudo install -d -m 0750 -o 999 -g 999 "$DATA_ROOT/mongodb-data" "$DATA_ROOT/redis-data"
+  sudo install -d -m 0750 -o 1000 -g 0 "$DATA_ROOT/elasticsearch-data"
+  sudo install -d -m 0750 -o 1000 -g 1000 "$DATA_ROOT/caddy-data" "$DATA_ROOT/caddy-config"
+  sudo install -d -m 0700 -o "$(id -u)" -g "$(id -g)" /etc/influence/secrets
+  printf '%s\n' 'vm.overcommit_memory=1' 'vm.max_map_count=262144' \
+    | sudo tee /etc/sysctl.d/99-influence-stack.conf >/dev/null
+  sudo sysctl --system >/dev/null
+  info "Persistent storage ready (operator $owner_group)"
+}
+
+install_signer_key() {
+  [ "$#" -eq 1 ] || die "Usage: ./stack install-signer-key /secure/path/private-key"
+  local source="$1"
+  local destination
+  [ -s "$source" ] || die "Signer key source is missing or empty: $source"
+  load_env
+  destination="${STARTER_PACK_PRIVATE_KEY_PATH:-/etc/influence/secrets/starter_pack_admin_private_key}"
+  case "$destination" in
+    /*) ;;
+    *) die "STARTER_PACK_PRIVATE_KEY_PATH must be absolute" ;;
+  esac
+  [ "$source" != "$destination" ] || die "Signer key is already at its destination"
+  sudo install -d -m 0700 -o "$(id -u)" -g "$(id -g)" "$(dirname "$destination")"
+  sudo install -m 0400 -o "$(id -u)" -g "$(id -g)" "$source" "$destination"
+  info "Installed signer key at $destination"
+}
+
+config_stack() {
+  require_command jq
+  require_command openssl
+  load_env
+  refresh_connection_secrets
+  validate_data_root
+  validate_configuration
+  compose_files
+  validate_application_images
+  compose --profile indexer --profile auditor --profile tools config >/dev/null
+  info "Production Compose configuration is valid"
+}
+
+integration_test() {
+  [ "$#" -eq 1 ] || die "Usage: ./stack integration-test IMAGE@sha256:DIGEST"
+  require_command docker
+  require_command jq
+  require_command openssl
+  load_env
+  export INFLUENCE_SERVER_IMAGE="$1"
+  validate_image_pin INFLUENCE_SERVER_IMAGE
+  validate_image_pin MONGO_IMAGE
+  validate_image_pin REDIS_IMAGE
+  validate_image_pin ELASTICSEARCH_IMAGE
+  compose_files
+  validate_application_images
+  local fingerprint
+  fingerprint="$(deployment_fingerprint)"
+
+  local integration_secrets_dir
+  integration_secrets_dir="$(mktemp -d)"
+  chmod 700 "$integration_secrets_dir"
+  umask 077
+  openssl rand -hex 32 > "${integration_secrets_dir}/mongo_root_password"
+  openssl rand -hex 32 > "${integration_secrets_dir}/mongo_app_password"
+  openssl rand -hex 32 > "${integration_secrets_dir}/redis_password"
+  openssl rand -hex 32 > "${integration_secrets_dir}/elasticsearch_password"
+  local elasticsearch_password
+  local mongo_password
+  local redis_password
+  mongo_password="$(<"${integration_secrets_dir}/mongo_app_password")"
+  redis_password="$(<"${integration_secrets_dir}/redis_password")"
+  elasticsearch_password="$(<"${integration_secrets_dir}/elasticsearch_password")"
+  printf 'mongodb://%s:%s@mongo:27017/%s?authSource=%s\n' \
+    "${MONGO_APP_USERNAME:-influence}" "$mongo_password" \
+    "${MONGO_DATABASE:-influence}" "${MONGO_DATABASE:-influence}" \
+    > "${integration_secrets_dir}/mongo_url"
+  printf 'redis://:%s@redis:6379\n' "$redis_password" \
+    > "${integration_secrets_dir}/redis_url"
+  printf 'http://elastic:%s@elasticsearch:9200\n' "$elasticsearch_password" \
+    > "${integration_secrets_dir}/elasticsearch_url"
+  printf '%s\n' 'https://ethereum.invalid' \
+    > "${integration_secrets_dir}/alchemy_influence_ethereum_http_url"
+  export INTEGRATION_SECRETS_DIR="$integration_secrets_dir"
+
+  COMPOSE_ARGS=(-p "influence-integration-$$" "${COMPOSE_ARGS[@]}" -f "${STACK_ROOT}/compose.smoke.yaml")
+  trap 'compose down --volumes --remove-orphans >/dev/null 2>&1 || true; rm -rf -- "$integration_secrets_dir"' EXIT
+
+  info "Pulling the selected server digest and pinned datastore images"
+  compose --profile tools pull influence-tools mongo redis elasticsearch
+  info "Starting temporary MongoDB, Redis, and Elasticsearch"
+  compose up -d mongo redis elasticsearch
+  wait_for_health mongo
+  wait_for_health redis
+  wait_for_health elasticsearch 600
+
+  local script
+  script=$(cat <<'EOF'
+require('module-alias/register');
+const { mongoose } = require('@common/storage/db');
+const redis = require('@common/lib/redis');
+const { client: elasticsearch } = require('@common/storage/elasticsearch');
+(async () => {
+  await mongoose.connection.asPromise();
+  await mongoose.connection.db.admin().ping();
+  await redis.set('influence-stack-smoke', 'ok', 10_000);
+  if (await redis.get('influence-stack-smoke') !== 'ok') throw new Error('Redis round trip failed');
+  const elasticsearchInfo = await elasticsearch.info();
+  console.log(JSON.stringify({
+    mongo: 'ok',
+    redis: 'ok',
+    elasticsearch: elasticsearchInfo.version.number
+  }));
+  await redis.delete('influence-stack-smoke');
+  await redis.disconnect();
+  await elasticsearch.close();
+  await mongoose.disconnect();
+})().catch((error) => { console.error(error); process.exit(1); });
+EOF
+)
+
+  info "Testing authenticated connections from the selected Influence image"
+  compose --profile tools run --rm --no-deps influence-tools -e "$script"
+  compose down --volumes --remove-orphans
+  rm -rf -- "$integration_secrets_dir"
+  trap - EXIT
+  record_integration_test "$INFLUENCE_SERVER_IMAGE" "$fingerprint"
+  info "Integration test passed for $INFLUENCE_SERVER_IMAGE"
+  info "Disposable credentials, containers, and volumes were removed"
+}
+
+prepare_juno() {
+  [ "$#" -eq 0 ] || die "Usage: ./stack prepare-juno"
+  [ ! -e "${STATE_DIR}/bootstrap-complete" ] \
+    || die "This stack is already bootstrapped; use restart-juno or upgrade-juno"
+  local command
+  for command in curl docker jq sha256sum tar zstd; do
+    require_command "$command"
+  done
+  load_env
+  validate_data_root
+  validate_juno_configuration
+  export HOST_UID="${HOST_UID:-$(id -u)}"
+  export HOST_GID="${HOST_GID:-$(id -g)}"
+  COMPOSE_ARGS=(--env-file "$ENV_FILE" -f "${STACK_ROOT}/compose.juno.yaml")
+  [ -d "${DATA_ROOT}/juno-data" ] && [ -d "${DATA_ROOT}/downloads" ] \
+    || die "Persistent directories are missing; run ./stack prepare-host first"
+  compose config --quiet
+  install_juno_snapshot
+  compose up -d --no-deps juno
+  wait_for_juno
+  info "Juno is ready and will keep running. Obtain a consistent Mongo dump, then run bootstrap."
+}
+
+bootstrap_stack() {
+  local mongo_dump=""
+  local rebuild_packed_cache=0
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --mongo-dump)
+        [ "$#" -ge 2 ] || die "--mongo-dump requires a path"
+        mongo_dump="$2"
+        shift 2
+        ;;
+      --rebuild-packed-cache)
+        rebuild_packed_cache=1
+        shift
+        ;;
+      *) die "Unknown bootstrap option: $1" ;;
+    esac
+  done
+
+  [ -n "$mongo_dump" ] || die "A Mongo dump is required for a fresh production bootstrap"
+  [ ! -e "${STATE_DIR}/bootstrap-complete" ] || die "This stack is already bootstrapped"
+  require_command curl
+  require_command docker
+  require_command jq
+  require_command openssl
+  require_command sha256sum
+  require_command tar
+  require_command zstd
+  load_env
+  refresh_connection_secrets
+  validate_data_root
+  validate_configuration
+  compose_files
+  validate_application_images
+  require_integration_test
+  [ -d "${DATA_ROOT}/juno-data" ] || die "Persistent directories are missing; run ./stack prepare-host first"
+  [ -d "${DATA_ROOT}/backups" ] || die "Persistent directories are missing; run ./stack prepare-host first"
+
+  install_juno_snapshot
+  info "Starting persistent services"
+  compose up -d mongo redis elasticsearch juno
+  wait_for_health mongo
+  wait_for_health redis
+  wait_for_health elasticsearch 600
+  restore_mongo "$mongo_dump"
+
+  local restored_metrics
+  local restored_starknet_checkpoint
+  restored_metrics="$(mongo_metrics)"
+  jq -e '
+    (.ethereumCheckpoint | type == "number" and . >= 0)
+    and (.starknetCheckpoint | type == "number" and . >= 0)
+    and (.entities | type == "number" and . > 0)
+    and (.packedLotCacheEntries | type == "number")
+  ' <<<"$restored_metrics" >/dev/null \
+    || die "Mongo dump is missing Influence entities or chain checkpoints"
+  restored_starknet_checkpoint="$(jq -r '.starknetCheckpoint' <<<"$restored_metrics")"
+  if [ "$(jq -r '.packedLotCacheEntries' <<<"$restored_metrics")" -eq 0 ]; then
+    info "The restored dump has no packed lot cache; scheduling a rebuild"
+    rebuild_packed_cache=1
+  fi
+
+  wait_for_juno
+
+  if (( $(juno_block) < restored_starknet_checkpoint )); then
+    die "Juno synchronized below the restored MongoDB checkpoint"
+  fi
+  juno_has_block "$restored_starknet_checkpoint" \
+    || die "Juno does not retain the restored MongoDB checkpoint; use a full or compatible snapshot"
+
+  info "Creating and populating Elasticsearch indices"
+  reset_elasticsearch
+  compose --profile tools run --rm --no-deps influence-tools ./bin/elasticsearch.js initialSetup
+  compose exec -T elasticsearch sh -ec '
+    password="$(tr -d "\r\n" < /run/secrets/elasticsearch_password)"
+    curl -fsS -u "elastic:${password}" -X PUT \
+      -H "content-type: application/json" \
+      --data "{\"index\":{\"number_of_replicas\":0}}" \
+      "http://localhost:9200/_all/_settings"
+  ' >/dev/null
+  compose --profile tools run --rm --no-deps influence-tools ./bin/elasticsearch.js reIndex
+  compose --profile indexer up -d influence-indexer
+
+  if [ "$rebuild_packed_cache" -eq 1 ]; then
+    info "Rebuilding packed lot cache"
+    compose --profile tools run --rm --no-deps influence-tools \
+      ./bin/preloadLotData.js --initEmpty --setLeaseStatus
+  fi
+
+  info "Starting processors, chain retrievers, and auditors"
+  compose --profile indexer --profile auditor up -d \
+    influence-event-processor \
+    influence-ethereum-event-retriever \
+    influence-starknet-event-retriever \
+    influence-event-auditor \
+    influence-agreement-auditor
+  wait_for_convergence
+  wait_for_required_workers
+
+  info "Starting API and TLS edge"
+  compose --profile indexer --profile auditor up -d influence-server caddy
+  wait_for_health influence-server 300
+  date -u +%Y-%m-%dT%H:%M:%SZ > "${STATE_DIR}/bootstrap-complete"
+  info "Production stack bootstrap complete"
+}
+
+deploy_stack() {
+  [ -s "${STATE_DIR}/bootstrap-complete" ] || die "Stack is not bootstrapped; run ./stack bootstrap first"
+  load_env
+  require_command jq
+  require_command openssl
+  refresh_connection_secrets
+  validate_configuration
+  compose_files
+  validate_application_images
+  require_integration_test
+  ensure_juno_image_applied
+  compose --profile indexer --profile auditor up -d
+  wait_for_required_application_health
+}
+
+update_stack() {
+  load_env
+  require_command jq
+  require_command openssl
+  refresh_connection_secrets
+  validate_configuration
+  compose_files
+  validate_application_images
+  require_integration_test
+  ensure_juno_image_applied
+  "$0" backup
+  compose --profile indexer --profile auditor pull
+  compose --profile indexer --profile auditor up -d
+  wait_for_required_application_health
+}
+
+juno_container_image() {
+  local container
+  container="$(compose ps --all -q juno)"
+  [ -n "$container" ] || return 1
+  docker inspect --format '{{.Config.Image}}' "$container"
+}
+
+ensure_juno_image_applied() {
+  local running_image
+  if running_image="$(juno_container_image)" && [ "$running_image" != "$JUNO_IMAGE" ]; then
+    die "Juno image pin changed; apply it separately with ./stack upgrade-juno"
+  fi
+}
+
+maintain_juno() {
+  local operation="$1"
+  local stop_timeout="${JUNO_STOP_TIMEOUT_SECONDS:-300}"
+  local running_image
+  local metrics
+  local checkpoint
+
+  [ -s "${STATE_DIR}/bootstrap-complete" ] || die "Stack is not bootstrapped"
+  require_command curl
+  require_command docker
+  require_command jq
+  load_env
+  validate_configuration
+  compose_files
+  [[ "$stop_timeout" =~ ^[1-9][0-9]*$ ]] \
+    || die "JUNO_STOP_TIMEOUT_SECONDS must be a positive integer"
+  running_image="$(juno_container_image)" || die "Juno container does not exist"
+
+  case "$operation" in
+    restart)
+      [ "$running_image" = "$JUNO_IMAGE" ] \
+        || die "Juno image pin changed; use ./stack upgrade-juno"
+      ;;
+    upgrade)
+      [ "$running_image" != "$JUNO_IMAGE" ] \
+        || die "Juno already uses the configured image; use ./stack restart-juno"
+      info "Pulling the pinned Juno image before maintenance"
+      compose pull juno
+      "$0" backup
+      ;;
+    *) die "Unknown Juno maintenance operation: $operation" ;;
+  esac
+
+  metrics="$(mongo_metrics)" || die "Unable to read the saved Starknet checkpoint"
+  checkpoint="$(jq -er '.starknetCheckpoint | select(type == "number" and . >= 0)' <<<"$metrics")" \
+    || die "MongoDB does not contain a valid Starknet checkpoint"
+
+  [ -n "$(compose --profile indexer ps -q influence-starknet-event-retriever)" ] \
+    || die "The Starknet event retriever is not running"
+  info "Stopping the Starknet event retriever at checkpoint $checkpoint"
+  compose --profile indexer stop -t "$stop_timeout" influence-starknet-event-retriever
+  info "Stopping Juno gracefully"
+  compose stop -t "$stop_timeout" juno
+  info "Starting Juno with the configured image"
+  compose up -d --no-deps --force-recreate juno
+  wait_for_juno
+
+  if ! juno_has_block "$checkpoint"; then
+    die "Juno does not retain checkpoint $checkpoint; the Starknet retriever remains stopped"
+  fi
+
+  info "Restarting the Starknet event retriever"
+  compose --profile indexer up -d --no-deps influence-starknet-event-retriever
+  info "Juno $operation completed at block $(juno_block)"
+}
+
+restart_juno() {
+  [ "$#" -eq 0 ] || die "restart-juno takes no arguments"
+  maintain_juno restart
+}
+
+upgrade_juno() {
+  [ "$#" -eq 0 ] || die "upgrade-juno takes no arguments"
+  maintain_juno upgrade
+}
+
+status_stack() {
+  load_env
+  compose_files
+  compose --profile indexer --profile auditor ps
+  echo
+  if metrics="$(mongo_metrics 2>/dev/null)"; then
+    echo "Influence convergence: $metrics"
+  fi
+  if block="$(juno_block 2>/dev/null)"; then
+    echo "Juno block: $block"
+  fi
+}
+
+logs_stack() {
+  load_env
+  compose_files
+  if [ "$#" -gt 0 ]; then
+    compose --profile indexer --profile auditor logs --follow "$1"
+  else
+    compose --profile indexer --profile auditor logs --follow
+  fi
+}
+
+backup_stack() {
+  load_env
+  validate_data_root
+  compose_files
+  local output
+  output="${DATA_ROOT}/backups/influence-$(date -u +%Y%m%dT%H%M%SZ).archive"
+  local writers=(
+    influence-server
+    influence-indexer
+    influence-ethereum-event-retriever
+    influence-starknet-event-retriever
+    influence-event-processor
+    influence-event-auditor
+    influence-agreement-auditor
+  )
+  local active_writers=()
+  local writers_paused=0
+  local writer
+  for writer in "${writers[@]}"; do
+    if [ -n "$(compose ps -q "$writer")" ]; then
+      active_writers+=("$writer")
+    fi
+  done
+  info "Creating $output"
+  if [ "${#active_writers[@]}" -gt 0 ]; then
+    info "Briefly pausing database writers for a consistent dump"
+    compose --profile indexer --profile auditor pause "${active_writers[@]}"
+    writers_paused=1
+    trap 'if [ "$writers_paused" -eq 1 ]; then compose --profile indexer --profile auditor unpause "${active_writers[@]}" || true; fi' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+  fi
+  # The quoted script expands inside mongo-tools; only the output filename is
+  # intentionally inserted by the operator shell.
+  # shellcheck disable=SC2016
+  if ! compose --profile tools run --rm --no-deps \
+    --user "$(id -u):$(id -g)" \
+    --volume "${DATA_ROOT}/backups:/backups" \
+    mongo-tools sh -ec '
+        password="$(tr -d "\r\n" < /run/secrets/mongo_root_password)"
+        uri="mongodb://${MONGO_INITDB_ROOT_USERNAME}:${password}@mongo:27017/admin?authSource=admin"
+        mongodump --uri="$uri" --db="$MONGO_DATABASE" --archive="/backups/'"$(basename "$output")"'" --gzip
+      '; then
+    die "MongoDB backup failed"
+  fi
+  chmod 600 "$output"
+  if [ "${#active_writers[@]}" -gt 0 ]; then
+    compose --profile indexer --profile auditor unpause "${active_writers[@]}"
+    writers_paused=0
+  fi
+  trap - EXIT INT TERM
+  info "Backup complete: $output"
+}
+
+main() {
+  local command="${1:-}"
+  [ -n "$command" ] || { usage; exit 1; }
+  shift
+  case "$command" in
+    init) init_stack "$@" ;;
+    install-secret) install_secret "$@" ;;
+    prepare-host) prepare_host "$@" ;;
+    install-signer-key) install_signer_key "$@" ;;
+    config) config_stack "$@" ;;
+    integration-test) integration_test "$@" ;;
+    prepare-juno) prepare_juno "$@" ;;
+    bootstrap) bootstrap_stack "$@" ;;
+    deploy) deploy_stack "$@" ;;
+    update) update_stack "$@" ;;
+    restart-juno) restart_juno "$@" ;;
+    upgrade-juno) upgrade_juno "$@" ;;
+    status) status_stack "$@" ;;
+    logs) logs_stack "$@" ;;
+    backup) backup_stack "$@" ;;
+    help|-h|--help) usage ;;
+    *) usage; die "Unknown command: $command" ;;
+  esac
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi

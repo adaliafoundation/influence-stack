@@ -1,0 +1,10 @@
+services:
+  influence-server:
+    environment:
+      STARKNET_STARTER_PACK_PRIVATE_KEY_FILE: /run/secrets/starter_pack_admin_private_key
+    secrets:
+      - starter_pack_admin_private_key
+
+secrets:
+  starter_pack_admin_private_key:
+    file: ${STARTER_PACK_PRIVATE_KEY_PATH:-/etc/influence/secrets/starter_pack_admin_private_key}

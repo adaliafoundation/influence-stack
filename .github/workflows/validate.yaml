@@ -1,0 +1,143 @@
+name: Validate stack
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Scan repository configuration and committed files
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: fs
+          scanners: misconfig,secret
+          severity: HIGH,CRITICAL
+          exit-code: 1
+
+      - name: Install ShellCheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+
+      - name: Validate shell scripts
+        run: |
+          shellcheck stack scripts/*.sh
+          bash -n stack
+          sh -n scripts/juno-entrypoint.sh
+          sh -n scripts/mongo-init-app-user.sh
+
+      - name: Test standalone Juno preparation
+        run: bash scripts/test-prepare-juno.sh
+
+      - name: Create validation configuration
+        run: |
+          cp .env.example .env
+          mkdir -p secrets
+          for secret in \
+            mongo_root_password mongo_app_password mongo_url redis_password redis_url \
+            elasticsearch_password elasticsearch_url \
+            alchemy_juno_ethereum_ws_url alchemy_influence_ethereum_http_url jwt_secret \
+            argent_api_key ipfs_infura_api_key ipfs_infura_api_key_secret open_sea_api_key \
+            sendgrid_api_key stripe_secret_key stripe_webhook_secret \
+            avnu_paymaster_api_key banxa_api_key banxa_webhook_api_key banxa_webhook_secret; do
+            printf 'validation-only\n' > "secrets/$secret"
+          done
+          printf 'validation-only\n' > secrets/starter_pack_admin_private_key
+          chmod 600 secrets/*
+
+      - name: Render production configuration
+        run: docker compose --env-file .env --profile indexer --profile auditor --profile tools config --quiet
+
+      - name: Verify shared Juno configuration
+        run: |
+          docker compose --env-file .env -f compose.juno.yaml config --format json > /tmp/juno.json
+          docker compose --env-file .env config --format json > /tmp/production.json
+          jq -e --slurpfile production /tmp/production.json '
+            (.services | keys == ["juno"])
+            and (.services.juno == $production[0].services.juno)
+            and (.name == $production[0].name)
+            and (.networks.data == $production[0].networks.data)
+            and (.networks.outbound == $production[0].networks.outbound)
+          ' /tmp/juno.json
+
+      - name: Verify Juno retention policy
+        run: |
+          docker compose --env-file .env config --format json | jq -e '
+            .services.juno.image
+              == "nethermind/juno:v0.16.6@sha256:bbf154bdb370325ce2464ef7d49ff56207792a1f4556e7e1bace3348a1425cf0"
+            and (.services.juno.command | index("--prune-mode")) != null
+            and (.services.juno.command | index("128")) != null
+            and (.services.juno.command | index("--prune-min-age")) != null
+            and (.services.juno.command | index("720h")) != null
+          '
+
+      - name: Verify isolation and runtime hardening
+        run: |
+          docker compose --env-file .env --profile indexer --profile auditor config --format json | jq -e '
+            (.services.caddy.networks | keys == ["edge"])
+            and (.services.mongo.networks | keys == ["data"])
+            and (.services.redis.networks | keys == ["data"])
+            and (.services.elasticsearch.networks | keys == ["data"])
+            and (.services.juno.networks | keys | sort == ["data", "outbound"])
+            and (.services["influence-server"].networks | keys | sort == ["data", "edge", "outbound"])
+            and (.services["influence-server"].read_only == true)
+            and (.services["influence-server"].cap_drop == ["ALL"])
+            and (.services["influence-server"].user != "0:0")
+            and (.services["influence-server"].entrypoint == null)
+            and (.services["influence-server"].environment.MONGO_URL_FILE == "/run/secrets/mongo_url")
+            and (.services["influence-server"].environment.REDIS_URL_FILE == "/run/secrets/redis_url")
+            and (.services["influence-server"].environment.ELASTICSEARCH_URL_FILE == "/run/secrets/elasticsearch_url")
+            and (.services["influence-server"].environment.ETHEREUM_PROVIDER_FILE == "/run/secrets/alchemy_influence_ethereum_http_url")
+            and (.services.elasticsearch.environment["xpack.security.enabled"] == "true")
+            and (.networks.data.internal == true)
+            and (
+              [.services[] | .environment // {} | keys[]]
+              | any(. == "MONGO_URL" or . == "REDIS_URL" or . == "ELASTICSEARCH_URL" or . == "ETHEREUM_PROVIDER")
+              | not
+            )
+          '
+
+      - name: Verify the production application topology
+        run: |
+          docker compose --env-file .env --profile indexer --profile auditor --profile tools config --format json | jq -e '
+            .services as $services
+            | ($services["influence-server"].image) as $image
+            | ([
+                $services["influence-indexer"],
+                $services["influence-ethereum-event-retriever"],
+                $services["influence-starknet-event-retriever"],
+                $services["influence-event-processor"],
+                $services["influence-event-auditor"],
+                $services["influence-agreement-auditor"],
+                $services["influence-tools"]
+              ] | all(.image == $image))
+            and ($services["influence-server"].command == ["node", "src/api/server.js"])
+            and ($services["influence-indexer"].command == ["node", "src/workers/elasticsearch.js"])
+            and ($services["influence-ethereum-event-retriever"].command
+              == ["node", "src/workers/eventRetriever.js", "--eventSource=ethereum"])
+            and ($services["influence-starknet-event-retriever"].command
+              == ["node", "src/workers/eventRetriever.js", "--eventSource=starknet"])
+            and ($services["influence-event-processor"].command == ["node", "src/workers/eventProcessor.js"])
+            and ($services["influence-server"].healthcheck.test[-1] == "api")
+            and ($services["influence-indexer"].healthcheck.test[-1] == "elastic-indexer")
+            and ($services["influence-ethereum-event-retriever"].healthcheck.test[-1] == "ethereum-retriever")
+            and ($services["influence-starknet-event-retriever"].healthcheck.test[-1] == "starknet-retriever")
+            and ($services["influence-event-processor"].healthcheck.test[-1] == "event-processor")
+          '
+
+      - name: Render integration-test configuration
+        env:
+          INTEGRATION_SECRETS_DIR: ${{ github.workspace }}/secrets
+        run: docker compose --env-file .env -f compose.yaml -f compose.smoke.yaml --profile tools config --quiet
+
+      - name: Render provisioner configuration
+        env:
+          ENABLE_PROVISIONER: "1"
+          STARTER_PACK_PRIVATE_KEY_PATH: ./secrets/starter_pack_admin_private_key
+        run: docker compose --env-file .env -f compose.yaml -f compose.provisioner.yaml --profile indexer --profile auditor config --quiet

@@ -1,0 +1,61 @@
+name: ${COMPOSE_PROJECT_NAME:-influence-production}
+
+services:
+  juno:
+    image: ${JUNO_IMAGE:-nethermind/juno:v0.16.6@sha256:bbf154bdb370325ce2464ef7d49ff56207792a1f4556e7e1bace3348a1425cf0}
+    restart: unless-stopped
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    entrypoint: ["/opt/influence-stack/juno-entrypoint.sh"]
+    command:
+      - --network
+      - mainnet
+      - --db-path
+      - /var/lib/juno
+      - --prune-mode
+      - ${JUNO_PRUNE_RETAINED_BLOCKS:-128}
+      - --prune-min-age
+      - ${JUNO_PRUNE_MIN_AGE:-720h}
+      - --http
+      - --http-host
+      - 0.0.0.0
+      - --http-port
+      - "6060"
+      - --log-json
+    ports:
+      - "127.0.0.1:${JUNO_HOST_PORT:-6060}:6060"
+    volumes:
+      - ${DATA_ROOT:-/influencedata}/juno-data:/var/lib/juno
+      - ./scripts/juno-entrypoint.sh:/opt/influence-stack/juno-entrypoint.sh:ro
+    secrets:
+      - alchemy_juno_ethereum_ws_url
+    networks:
+      - data
+      - outbound
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:size=1g,mode=1777
+    mem_limit: ${JUNO_MEMORY_LIMIT:-24g}
+    cpus: ${JUNO_CPU_LIMIT:-8}
+    pids_limit: ${JUNO_PIDS_LIMIT:-1024}
+    logging:
+      driver: json-file
+      options:
+        max-size: "25m"
+        max-file: "5"
+    labels:
+      com.influenceth.stack.environment: production
+      com.influenceth.stack.project: ${COMPOSE_PROJECT_NAME:-influence-production}
+      com.influenceth.stack.component: starknet-node
+
+networks:
+  data:
+    internal: true
+  outbound:
+
+secrets:
+  alchemy_juno_ethereum_ws_url:
+    file: ./secrets/alchemy_juno_ethereum_ws_url
