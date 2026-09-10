@@ -41,6 +41,9 @@ jobs:
       - name: Test optional IPFS configuration
         run: bash scripts/test-ipfs-config.sh
 
+      - name: Test snapshot download recovery
+        run: bash scripts/test-juno-download.sh
+
       - name: Test standalone Juno preparation
         run: bash scripts/test-prepare-juno.sh
 

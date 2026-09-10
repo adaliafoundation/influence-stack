@@ -543,6 +543,45 @@ wait_for_juno() {
   die "Timed out waiting for Juno synchronization"
 }
 
+juno_snapshot_headers() {
+  curl --http1.1 -fsSIL --retry 5 --retry-delay 5 --connect-timeout 30 "$JUNO_SNAPSHOT_URL" \
+    | awk '
+      tolower($1) == "content-length:" { sub(/\r$/, "", $2); size=$2 }
+      tolower($1) == "content-disposition:" {
+        sub(/\r$/, ""); sub(/^[^:]*:/, "content-disposition:"); disposition=$0
+      }
+      END { print size; print disposition }'
+}
+
+download_juno_snapshot() {
+  local destination="$1"
+  local expected_headers="$2"
+  local attempt
+  local status
+  for attempt in 1 2 3 4 5 6; do
+    if [ "$attempt" -gt 1 ]; then
+      [ "$(juno_snapshot_headers)" = "$expected_headers" ] \
+        || die "Snapshot metadata changed during download; partial archive retained for inspection"
+    fi
+    # A fresh curl invocation recomputes the resume offset from the saved file.
+    if curl --http1.1 -fL --retry 5 --retry-delay 5 --connect-timeout 30 \
+      --speed-limit 1024 --speed-time 120 --continue-at - \
+      --output "$destination" "$JUNO_SNAPSHOT_URL"; then
+      return 0
+    else
+      status="$?"
+    fi
+    case "$status" in
+      5|6|7|18|28|35|52|55|56|92) ;;
+      *) return "$status" ;;
+    esac
+    [ "$attempt" -lt 6 ] || break
+    info "Snapshot transfer interrupted (curl $status); resuming saved bytes in 5 seconds (attempt $((attempt + 1))/6)"
+    sleep 5
+  done
+  return "$status"
+}
+
 install_juno_snapshot() {
   local juno_dir="${DATA_ROOT}/juno-data"
   local download_dir="${DATA_ROOT}/downloads"
@@ -566,9 +605,9 @@ install_juno_snapshot() {
   fi
 
   info "Inspecting the Juno mainnet snapshot"
-  headers="$(curl -fsSIL "$JUNO_SNAPSHOT_URL")"
-  content_length="$(awk 'BEGIN { IGNORECASE=1 } /^content-length:/ { gsub("\\r", "", $2); size=$2 } END { print size }' <<<"$headers")"
-  disposition="$(awk 'BEGIN { IGNORECASE=1 } /^content-disposition:/ { gsub("\\r", ""); value=$0 } END { print value }' <<<"$headers")"
+  headers="$(juno_snapshot_headers)"
+  content_length="${headers%%$'\n'*}"
+  disposition="${headers#*$'\n'}"
   [[ "$content_length" =~ ^[0-9]+$ ]] || die "Snapshot server did not provide a content length"
   [[ "$disposition" == *"${JUNO_SNAPSHOT_EXPECTED_VERSION:-v0.16.6}"* ]] \
     || die "Snapshot does not match JUNO_SNAPSHOT_EXPECTED_VERSION"
@@ -595,8 +634,7 @@ install_juno_snapshot() {
     || die "Insufficient free space for the snapshot download and extraction reserve"
 
   info "Downloading the Juno mainnet snapshot (resumable)"
-  curl -fL --retry 5 --retry-delay 5 --continue-at - \
-    --output "${archive}.part" "$JUNO_SNAPSHOT_URL"
+  download_juno_snapshot "${archive}.part" "$headers"
   [ "$(wc -c < "${archive}.part")" -eq "$content_length" ] \
     || die "Downloaded snapshot size does not match the server metadata"
   mv "${archive}.part" "$archive"

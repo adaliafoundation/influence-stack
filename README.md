@@ -319,6 +319,11 @@ snapshot:
 https://juno-snapshots.nethermind.io/files/mainnet-pruned/latest
 ```
 
+Snapshot transfers use HTTP/1.1 and retry transport interruptions up to five times,
+resuming saved bytes and rechecking upstream metadata between attempts. Connections
+time out after 30 seconds; transfers stalled below 1 KiB/s for two minutes are
+retried. Partial files remain available if retries are exhausted.
+
 Downloads are resumable and extraction happens in a staging directory before
 the database is installed. Bootstrap checks the upstream filename against the
 pinned Juno version, verifies the downloaded content length, and reserves the
