@@ -32,6 +32,12 @@ jobs:
           sh -n scripts/juno-entrypoint.sh
           sh -n scripts/mongo-init-app-user.sh
 
+      - name: Test off-host backup failure handling
+        run: bash scripts/test-backup.sh
+
+      - name: Verify encrypted backup restore
+        run: docker run --rm --entrypoint /bin/sh -v "$PWD/scripts/test-restic.sh:/test.sh:ro" restic/restic:0.16.4 /test.sh
+
       - name: Test standalone Juno preparation
         run: bash scripts/test-prepare-juno.sh
 

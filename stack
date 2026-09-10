@@ -36,7 +36,10 @@ Commands:
   upgrade-juno          Safely apply a changed immutable Juno image pin
   status                Show service and convergence status
   logs [service]        Follow all logs or one Compose service
-  backup                Create a compressed MongoDB archive
+  backup                Upload an encrypted MongoDB and configuration backup
+  backup-init           Initialize the configured off-host Restic repository
+  backup-repository ARGS
+                        Run Restic commands (snapshots, check, restore, etc.)
 
 Bootstrap options:
   --mongo-dump PATH     Compressed mongodump archive for a fresh deployment
@@ -232,6 +235,7 @@ deployment_fingerprint() {
     compose.smoke.yaml
     config/Caddyfile
     scripts/juno-entrypoint.sh
+    scripts/backup.sh
     scripts/mongo-init-app-user.sh
   )
   {
@@ -390,9 +394,8 @@ validate_configuration() {
       || [ "${CREWMATE_PROVISIONER_ENABLED:-0}" = "1" ] \
       || die "ENABLE_PROVISIONER=1 but no provisioner feature is enabled"
 
-    for variable in STARKNET_STARTER_PACK_ADMIN; do
-      [ -n "${!variable:-}" ] || { echo "Configuration required: $variable" >&2; invalid=1; }
-    done
+    [ -n "${STARKNET_STARTER_PACK_ADMIN:-}" ] \
+      || { echo "Configuration required: STARKNET_STARTER_PACK_ADMIN" >&2; invalid=1; }
     validate_secret_file stripe_secret_key || invalid=1
     validate_secret_file stripe_webhook_secret || invalid=1
     if [ "${STARTER_PACK_PROVISIONER_ENABLED:-0}" = "1" ]; then
@@ -412,9 +415,8 @@ validate_configuration() {
   fi
 
   if [ "${BANXA_CHECKOUT_ENABLED:-0}" = "1" ]; then
-    for variable in BANXA_PARTNER_REF; do
-      [ -n "${!variable:-}" ] || { echo "Configuration required: $variable" >&2; invalid=1; }
-    done
+    [ -n "${BANXA_PARTNER_REF:-}" ] \
+      || { echo "Configuration required: BANXA_PARTNER_REF" >&2; invalid=1; }
     validate_secret_file banxa_api_key || invalid=1
     validate_secret_file banxa_webhook_api_key || invalid=1
     validate_secret_file banxa_webhook_secret || invalid=1
@@ -648,6 +650,8 @@ restore_mongo() {
 reset_elasticsearch() {
   local indices
   local index
+  # The quoted script expands inside Elasticsearch, not in this operator shell.
+  # shellcheck disable=SC2016
   indices="$(compose exec -T elasticsearch sh -ec '
     password="$(tr -d "\r\n" < /run/secrets/elasticsearch_password)"
     curl -fsS -u "elastic:${password}" "http://localhost:9200/_cat/indices?h=index"
@@ -659,6 +663,8 @@ reset_elasticsearch() {
       .*) continue ;;
       *[!A-Za-z0-9._-]*) die "Refusing to delete unexpected Elasticsearch index name: $index" ;;
     esac
+    # The quoted script expands inside Elasticsearch, including the index argument.
+    # shellcheck disable=SC2016
     compose exec -T elasticsearch sh -ec '
       password="$(tr -d "\r\n" < /run/secrets/elasticsearch_password)"
       curl -fsS -u "elastic:${password}" -X DELETE "http://localhost:9200/$1"
@@ -745,13 +751,14 @@ init_stack() {
 }
 
 install_secret() {
-  [ "$#" -ge 1 ] && [ "$#" -le 2 ] \
-    || die "Usage: ./stack install-secret NAME [PATH]"
+  if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
+    die "Usage: ./stack install-secret NAME [PATH]"
+  fi
   local name="$1"
   local source="${2:-}"
   local destination
   case "$name" in
-    alchemy_juno_ethereum_ws_url|alchemy_influence_ethereum_http_url|jwt_secret|\
+    restic_password|alchemy_juno_ethereum_ws_url|alchemy_influence_ethereum_http_url|jwt_secret|\
     argent_api_key|ipfs_infura_api_key|ipfs_infura_api_key_secret|open_sea_api_key|\
     sendgrid_api_key|stripe_secret_key|stripe_webhook_secret|\
     avnu_paymaster_api_key|banxa_api_key|banxa_webhook_api_key|banxa_webhook_secret) ;;
@@ -927,8 +934,9 @@ prepare_juno() {
   export HOST_UID="${HOST_UID:-$(id -u)}"
   export HOST_GID="${HOST_GID:-$(id -g)}"
   COMPOSE_ARGS=(--env-file "$ENV_FILE" -f "${STACK_ROOT}/compose.juno.yaml")
-  [ -d "${DATA_ROOT}/juno-data" ] && [ -d "${DATA_ROOT}/downloads" ] \
-    || die "Persistent directories are missing; run ./stack prepare-host first"
+  if [ ! -d "${DATA_ROOT}/juno-data" ] || [ ! -d "${DATA_ROOT}/downloads" ]; then
+    die "Persistent directories are missing; run ./stack prepare-host first"
+  fi
   compose config --quiet
   install_juno_snapshot
   compose up -d --no-deps juno
@@ -1008,6 +1016,8 @@ bootstrap_stack() {
   info "Creating and populating Elasticsearch indices"
   reset_elasticsearch
   compose --profile tools run --rm --no-deps influence-tools ./bin/elasticsearch.js initialSetup
+  # The quoted script expands inside Elasticsearch, not in this operator shell.
+  # shellcheck disable=SC2016
   compose exec -T elasticsearch sh -ec '
     password="$(tr -d "\r\n" < /run/secrets/elasticsearch_password)"
     curl -fsS -u "elastic:${password}" -X PUT \
@@ -1175,12 +1185,29 @@ logs_stack() {
   fi
 }
 
-backup_stack() {
+backup_stack() (
   load_env
   validate_data_root
+  prepare_backup_repository
+  require_command flock
+  mkdir -p "$STATE_DIR"
+  exec 9>"$STATE_DIR/backup.lock"
+  flock -n 9 || die "Another backup is already running"
+  # Check remote access before pausing production writers.
+  backup_restic snapshots >/dev/null
   compose_files
   local output
-  output="${DATA_ROOT}/backups/influence-$(date -u +%Y%m%dT%H%M%SZ).archive"
+  local staging
+  umask 077
+  staging="$(mktemp -d "${DATA_ROOT}/backups/pending.XXXXXX")"
+  output="$staging/influence.archive"
+  local backup_paths=("$output" "$ENV_FILE" "$STACK_ROOT/secrets" "$STACK_ROOT/config"
+    "$STACK_ROOT/stack" "$STACK_ROOT/scripts" "$STACK_ROOT"/compose*.yaml)
+  if [ "${ENABLE_PROVISIONER:-0}" = "1" ]; then
+    local signer="${STARTER_PACK_PRIVATE_KEY_PATH:-/etc/influence/secrets/starter_pack_admin_private_key}"
+    [ -r "$signer" ] && [ -s "$signer" ] || die "Cannot back up provisioner signer: $signer"
+    backup_paths+=("$signer")
+  fi
   local writers=(
     influence-server
     influence-indexer
@@ -1201,18 +1228,18 @@ backup_stack() {
   info "Creating $output"
   if [ "${#active_writers[@]}" -gt 0 ]; then
     info "Briefly pausing database writers for a consistent dump"
-    compose --profile indexer --profile auditor pause "${active_writers[@]}"
     writers_paused=1
     trap 'if [ "$writers_paused" -eq 1 ]; then compose --profile indexer --profile auditor unpause "${active_writers[@]}" || true; fi' EXIT
     trap 'exit 130' INT
     trap 'exit 143' TERM
+    compose --profile indexer --profile auditor pause "${active_writers[@]}"
   fi
   # The quoted script expands inside mongo-tools; only the output filename is
   # intentionally inserted by the operator shell.
   # shellcheck disable=SC2016
   if ! compose --profile tools run --rm --no-deps \
     --user "$(id -u):$(id -g)" \
-    --volume "${DATA_ROOT}/backups:/backups" \
+    --volume "${staging}:/backups" \
     mongo-tools sh -ec '
         password="$(tr -d "\r\n" < /run/secrets/mongo_root_password)"
         uri="mongodb://${MONGO_INITDB_ROOT_USERNAME}:${password}@mongo:27017/admin?authSource=admin"
@@ -1226,8 +1253,16 @@ backup_stack() {
     writers_paused=0
   fi
   trap - EXIT INT TERM
-  info "Backup complete: $output"
-}
+  if ! backup_restic backup --tag "$BACKUP_TAG" --host "$BACKUP_HOST" \
+    --exclude "$(secret_file restic_password)" "${backup_paths[@]}"; then
+    die "Off-host backup failed; local archive retained at $output"
+  fi
+  rm -- "$output"
+  rmdir -- "$staging"
+  backup_restic forget --tag "$BACKUP_TAG" --host "$BACKUP_HOST" --group-by host,tags \
+    --keep-daily "$BACKUP_KEEP_DAILY" --keep-weekly "$BACKUP_KEEP_WEEKLY" --prune
+  info "Encrypted off-host backup complete"
+)
 
 main() {
   local command="${1:-}"
@@ -1249,10 +1284,15 @@ main() {
     status) status_stack "$@" ;;
     logs) logs_stack "$@" ;;
     backup) backup_stack "$@" ;;
+    backup-init) backup_repository init "$@" ;;
+    backup-repository) backup_repository "$@" ;;
     help|-h|--help) usage ;;
     *) usage; die "Unknown command: $command" ;;
   esac
 }
+
+# shellcheck source=scripts/backup.sh
+source "$STACK_ROOT/scripts/backup.sh"
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
   main "$@"

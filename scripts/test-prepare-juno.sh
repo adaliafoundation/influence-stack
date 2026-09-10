@@ -5,7 +5,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TEST_ROOT="$(mktemp -d)"
 trap 'rm -rf "$TEST_ROOT"' EXIT
 # Load the command functions without dispatching the CLI.
-# shellcheck source=../stack
+# shellcheck source=stack
 source "$REPO_ROOT/stack"
 STACK_ROOT="$TEST_ROOT"
 ENV_FILE="$TEST_ROOT/.env"
