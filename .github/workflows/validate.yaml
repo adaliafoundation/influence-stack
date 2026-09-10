@@ -38,6 +38,9 @@ jobs:
       - name: Verify encrypted backup restore
         run: docker run --rm --entrypoint /bin/sh -v "$PWD/scripts/test-restic.sh:/test.sh:ro" restic/restic:0.16.4 /test.sh
 
+      - name: Test optional IPFS configuration
+        run: bash scripts/test-ipfs-config.sh
+
       - name: Test standalone Juno preparation
         run: bash scripts/test-prepare-juno.sh
 
@@ -49,7 +52,7 @@ jobs:
             mongo_root_password mongo_app_password mongo_url redis_password redis_url \
             elasticsearch_password elasticsearch_url \
             alchemy_juno_ethereum_ws_url alchemy_influence_ethereum_http_url jwt_secret \
-            argent_api_key ipfs_infura_api_key ipfs_infura_api_key_secret open_sea_api_key \
+            argent_api_key ipfs_rpc_authorization open_sea_api_key \
             sendgrid_api_key stripe_secret_key stripe_webhook_secret \
             avnu_paymaster_api_key banxa_api_key banxa_webhook_api_key banxa_webhook_secret; do
             printf 'validation-only\n' > "secrets/$secret"
