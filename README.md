@@ -175,9 +175,12 @@ stale or incomplete packed lot data:
 
 `update` creates a MongoDB backup before pulling and recreating containers.
 The backup command briefly pauses application writers so its collection data and
-saved chain checkpoints form a consistent restore point. Backups are written below
-`${DATA_ROOT}/backups`. Production operators must copy them to encrypted off-host
-storage and test restores regularly.
+saved chain checkpoints form a consistent restore point. It uploads the Mongo dump
+and deployment configuration/secrets to an encrypted off-host Restic repository,
+then removes the temporary local archive. Remote access is required; it never falls
+back to a local-only backup. Configure the Storage Box, encryption password, daily
+timer, and retention using [Off-host backups](docs/off-host-backups.md) before
+running `backup`, `update`, or `upgrade-juno`.
 
 `restart-juno` performs a controlled restart without changing the pinned image.
 It stops the Starknet event retriever, gives Juno time to shut down cleanly,
@@ -401,7 +404,6 @@ production bootstrap:
 
 - Prerelease/Sepolia Compose overlay
 - Bundled Mezmo, Fluent Bit, or OpenTelemetry collector profile
-- Automated off-host backup upload and retention policy
 - Full database reconstruction from chain origin without a Mongo dump
 - Multi-host MongoDB or Elasticsearch high availability
 - Client container and edge route, after an immutable client image is released
