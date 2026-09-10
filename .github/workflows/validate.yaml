@@ -78,13 +78,15 @@ jobs:
             and (.networks.outbound == $production[0].networks.outbound)
           ' /tmp/juno.json
 
+      - name: Validate flags against the pinned Juno image
+        run: bash scripts/test-juno-cli.sh
+
       - name: Verify Juno retention policy
         run: |
           docker compose --env-file .env config --format json | jq -e '
             .services.juno.image
               == "nethermind/juno:v0.16.6@sha256:bbf154bdb370325ce2464ef7d49ff56207792a1f4556e7e1bace3348a1425cf0"
-            and (.services.juno.command | index("--prune-mode")) != null
-            and (.services.juno.command | index("128")) != null
+            and (.services.juno.command | index("--prune-mode=128")) != null
             and (.services.juno.command | index("--prune-min-age")) != null
             and (.services.juno.command | index("720h")) != null
           '
