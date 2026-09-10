@@ -236,8 +236,9 @@ services:
       BANXA_REQUEST_TIMEOUT_MS: ${BANXA_REQUEST_TIMEOUT_MS:-10000}
       JWT_SECRET_FILE: /run/secrets/jwt_secret
       ARGENT_API_KEY_FILE:
-      IPFS_INFURA_API_KEY_FILE:
-      IPFS_INFURA_API_KEY_SECRET_FILE:
+      IPFS_RPC_URL: ${IPFS_RPC_URL:-}
+      IPFS_GATEWAY_URL: ${IPFS_GATEWAY_URL:-}
+      IPFS_RPC_AUTHORIZATION_FILE:
       OPEN_SEA_API_KEY_FILE:
       SENDGRID_API_KEY_FILE:
       STRIPE_SECRET_KEY_FILE:
@@ -253,8 +254,7 @@ services:
       - alchemy_influence_ethereum_http_url
       - jwt_secret
       - argent_api_key
-      - ipfs_infura_api_key
-      - ipfs_infura_api_key_secret
+      - ipfs_rpc_authorization
       - open_sea_api_key
       - sendgrid_api_key
       - stripe_secret_key
@@ -423,10 +423,8 @@ secrets:
     file: ./secrets/jwt_secret
   argent_api_key:
     file: ./secrets/argent_api_key
-  ipfs_infura_api_key:
-    file: ./secrets/ipfs_infura_api_key
-  ipfs_infura_api_key_secret:
-    file: ./secrets/ipfs_infura_api_key_secret
+  ipfs_rpc_authorization:
+    file: ./secrets/ipfs_rpc_authorization
   open_sea_api_key:
     file: ./secrets/open_sea_api_key
   sendgrid_api_key:

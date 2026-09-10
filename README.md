@@ -281,6 +281,35 @@ Bootstrap reuses the prepared node and still checks that the restored chain
 checkpoint is queryable before starting retrievers. The combined bootstrap remains
 available when you already have a suitable dump.
 
+## Optional IPFS storage
+
+The server image must include the provider-neutral IPFS configuration contract.
+Set `IPFS_RPC_URL` in `.env` to a Kubo-compatible API root including `/api/v0`.
+Set `IPFS_GATEWAY_URL` to the gateway base before `/ipfs/<CID>` when needed by
+setup tooling; configure the frontend gateway independently. Both default to empty.
+Without an RPC endpoint, uploads return HTTP 503 while local hashing and database
+reads remain available.
+
+For an authenticated endpoint, install the complete Authorization header (for
+example `Bearer <token>`) using the hidden prompt:
+
+```sh
+./stack install-secret ipfs_rpc_authorization
+```
+
+Compose mounts `secrets/ipfs_rpc_authorization` into the API container and supplies
+`IPFS_RPC_AUTHORIZATION_FILE=/run/secrets/ipfs_rpc_authorization` only when the file
+is nonempty. Leave it empty for an unauthenticated private endpoint. The header is
+never placed in `.env` or the container environment. Recreate the API container
+after rotating it so the file is remounted and the application reloads it.
+
+On an existing checkout, rerun `./stack init` to add the URL settings and new secret
+file. Old Infura key files are no longer mounted or used; they are not automatically
+converted or deleted. Install the credential required by the chosen provider.
+Changing providers does not migrate existing pins. Publish and pin a server image
+containing the new IPFS implementation, then rerun the image integration test before
+deploying the changed configuration.
+
 ## Juno bootstrap
 
 The normal bootstrap path uses Nethermind's latest weekly pruned mainnet

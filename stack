@@ -103,8 +103,7 @@ prepare_optional_secret_paths() {
     fi
   done <<'EOF'
 ARGENT_API_KEY_FILE argent_api_key
-IPFS_INFURA_API_KEY_FILE ipfs_infura_api_key
-IPFS_INFURA_API_KEY_SECRET_FILE ipfs_infura_api_key_secret
+IPFS_RPC_AUTHORIZATION_FILE ipfs_rpc_authorization
 OPEN_SEA_API_KEY_FILE open_sea_api_key
 SENDGRID_API_KEY_FILE sendgrid_api_key
 STRIPE_SECRET_KEY_FILE stripe_secret_key
@@ -735,8 +734,7 @@ init_stack() {
   migrate_env_secret ALCHEMY_JUNO_ETHEREUM_WS_URL alchemy_juno_ethereum_ws_url
   migrate_env_secret ALCHEMY_INFLUENCE_ETHEREUM_HTTP_URL alchemy_influence_ethereum_http_url
   migrate_env_secret ARGENT_API_KEY argent_api_key
-  migrate_env_secret IPFS_INFURA_API_KEY ipfs_infura_api_key
-  migrate_env_secret IPFS_INFURA_API_KEY_SECRET ipfs_infura_api_key_secret
+  migrate_env_secret IPFS_RPC_AUTHORIZATION ipfs_rpc_authorization
   migrate_env_secret OPEN_SEA_API_KEY open_sea_api_key
   migrate_env_secret SENDGRID_API_KEY sendgrid_api_key
   migrate_env_secret STRIPE_SECRET_KEY stripe_secret_key
@@ -759,7 +757,7 @@ install_secret() {
   local destination
   case "$name" in
     restic_password|alchemy_juno_ethereum_ws_url|alchemy_influence_ethereum_http_url|jwt_secret|\
-    argent_api_key|ipfs_infura_api_key|ipfs_infura_api_key_secret|open_sea_api_key|\
+    argent_api_key|ipfs_rpc_authorization|open_sea_api_key|\
     sendgrid_api_key|stripe_secret_key|stripe_webhook_secret|\
     avnu_paymaster_api_key|banxa_api_key|banxa_webhook_api_key|banxa_webhook_secret) ;;
     *) die "Unsupported secret name: $name" ;;
