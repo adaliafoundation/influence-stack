@@ -31,6 +31,10 @@ jobs:
           bash -n stack
           sh -n scripts/juno-entrypoint.sh
           sh -n scripts/mongo-init-app-user.sh
+          sh -n scripts/mongo-entrypoint.sh
+
+      - name: Test Mongo secret permissions on Linux
+        run: bash scripts/test-mongo-secrets.sh
 
       - name: Test off-host backup failure handling
         run: bash scripts/test-backup.sh

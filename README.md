@@ -222,6 +222,12 @@ are actually used. `./stack config` fails closed when a required value is missin
 an enabled feature lacks credentials, a secret file is too broadly readable, or an
 image is not pinned by digest.
 
+Mongo startup copies its two host-owned secret files into a private tmpfs directory
+owned by the image's `mongodb` user before invoking the official entrypoint. Host
+files retain their owner-only permissions; runtime copies are mode 0400 and never
+written into the image or persistent database volume. Production and integration
+tests use the same startup path.
+
 Compose mounts secrets as files and supplies only their paths through variables such
 as `MONGO_URL_FILE=/run/secrets/mongo_url`. Influence Server reads each file directly
 into its application configuration; secret values are not copied into `.env`, the
