@@ -236,6 +236,7 @@ deployment_fingerprint() {
     scripts/juno-entrypoint.sh
     scripts/backup.sh
     scripts/mongo-init-app-user.sh
+    scripts/mongo-entrypoint.sh
   )
   {
     compose --profile indexer --profile auditor --profile tools config --format json
