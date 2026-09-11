@@ -5,7 +5,7 @@ image="$(docker compose --env-file "$REPO_ROOT/.env.example" -f "$REPO_ROOT/comp
 name="influence-mongo-permissions-$$"
 volume="$name-secrets"
 # Invoked by the EXIT trap.
-# shellcheck disable=SC2329
+# shellcheck disable=SC2317,SC2329
 cleanup() {
   docker rm -f "$name" >/dev/null 2>&1 || true
   docker volume rm "$volume" >/dev/null 2>&1 || true
