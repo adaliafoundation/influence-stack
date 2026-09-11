@@ -343,7 +343,7 @@ validate_configuration() {
   local invalid=0
   local variable
   local value
-  for variable in API_DOMAIN CADDY_EMAIL CLIENT_URL BRIDGE_CLIENT_URL IMAGES_SERVER_URL; do
+  for variable in API_DOMAIN CADDY_EMAIL CLIENT_URL IMAGES_SERVER_URL; do
     if [ -z "${!variable:-}" ] || [[ "${!variable}" == *example.com* ]] || [[ "${!variable}" == *replace-me* ]]; then
       echo "Configuration required: $variable" >&2
       invalid=1
