@@ -43,6 +43,8 @@ Commands:
 
 Bootstrap options:
   --mongo-dump PATH     Compressed mongodump archive for a fresh deployment
+  --resume-after-restore
+                        Validate existing Mongo data and continue without restoring
   --rebuild-packed-cache
                         Recompute packed lot data after restoring MongoDB
 EOF
@@ -519,8 +521,11 @@ const { EthereumBlockCache, StarknetBlockCache } = require('@common/lib/cache');
     indexQueue: await mongoose.model('IndexItem').countDocuments({}),
     unprocessedEvents: await mongoose.model('Event').countDocuments({ lastProcessed: null, removed: { $ne: true } })
   };
-  console.log(JSON.stringify(result));
   await mongoose.disconnect();
+  // This one-off probe imports caches with their own persistent connections.
+  // Write synchronously to bypass console logging and flush before terminating.
+  require('fs').writeSync(1, `${JSON.stringify(result)}\n`);
+  process.exit(0);
 })().catch((error) => { console.error(error); process.exit(1); });
 EOF
 )
@@ -679,8 +684,9 @@ restore_mongo() {
     --volume "${dump_path}:/restore/influence.archive:ro" \
     mongo-tools sh -ec '
       password="$(tr -d "\r\n" < /run/secrets/mongo_root_password)"
-      uri="mongodb://${MONGO_INITDB_ROOT_USERNAME}:${password}@mongo:27017/admin?authSource=admin"
+      uri="mongodb://${MONGO_INITDB_ROOT_USERNAME}:${password}@mongo:27017/?authSource=admin"
       mongorestore --uri="$uri" --archive=/restore/influence.archive --gzip --drop \
+        --nsInclude="${MONGO_RESTORE_SOURCE_DATABASE}.*" \
         --nsFrom="${MONGO_RESTORE_SOURCE_DATABASE}.*" --nsTo="${MONGO_DATABASE}.*"
     '
 }
@@ -983,6 +989,7 @@ prepare_juno() {
 
 bootstrap_stack() {
   local mongo_dump=""
+  local resume_after_restore=0
   local rebuild_packed_cache=0
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -990,6 +997,10 @@ bootstrap_stack() {
         [ "$#" -ge 2 ] || die "--mongo-dump requires a path"
         mongo_dump="$2"
         shift 2
+        ;;
+      --resume-after-restore)
+        resume_after_restore=1
+        shift
         ;;
       --rebuild-packed-cache)
         rebuild_packed_cache=1
@@ -999,7 +1010,11 @@ bootstrap_stack() {
     esac
   done
 
-  [ -n "$mongo_dump" ] || die "A Mongo dump is required for a fresh production bootstrap"
+  if [ "$resume_after_restore" -eq 1 ]; then
+    [ -z "$mongo_dump" ] || die "Use either --mongo-dump or --resume-after-restore, not both"
+  else
+    [ -n "$mongo_dump" ] || die "A Mongo dump is required for a fresh production bootstrap"
+  fi
   [ ! -e "${STATE_DIR}/bootstrap-complete" ] || die "This stack is already bootstrapped"
   require_command curl
   require_command docker
@@ -1024,7 +1039,11 @@ bootstrap_stack() {
   wait_for_health mongo
   wait_for_health redis
   wait_for_health elasticsearch 600
-  restore_mongo "$mongo_dump"
+  if [ "$resume_after_restore" -eq 1 ]; then
+    info "Resuming with existing MongoDB data; skipping archive restore"
+  else
+    restore_mongo "$mongo_dump"
+  fi
 
   local restored_metrics
   local restored_starknet_checkpoint

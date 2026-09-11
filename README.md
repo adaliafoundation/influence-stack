@@ -160,6 +160,23 @@ stale or incomplete packed lot data:
   --rebuild-packed-cache
 ```
 
+### Resume after a completed Mongo restore
+
+If an initial bootstrap restored MongoDB successfully but failed afterward, stop
+that bootstrap before retrying. After updating the stack, rerun the image
+integration test to refresh its configuration fingerprint, then use:
+
+```sh
+./stack bootstrap --resume-after-restore
+```
+
+This explicitly skips the archive restore and rechecks the existing entities,
+chain checkpoints, packed cache, and Juno checkpoint availability. It then rebuilds
+Elasticsearch and continues normal catch-up and API startup. Use it only after a
+confirmed complete restore, before the new deployment serves production traffic.
+It cannot be combined with `--mongo-dump`, and completed deployments are rejected.
+It does not skip validation or resume Elasticsearch halfway through indexing.
+
 ## Operations
 
 ```sh
