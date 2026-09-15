@@ -34,6 +34,12 @@ configuration.
 - Ethereum and Starknet event retrievers
 - Event processor and Elasticsearch indexer
 - Event and agreement auditors
+
+The event and agreement auditors run once when their containers start, then wait
+one hour after each run completes before running again. Configure the delays with
+`EVENT_AUDIT_INTERVAL_SECONDS` and `AGREEMENT_AUDIT_INTERVAL_SECONDS` (both default
+to `3600`). Runs do not overlap, and failed runs use the same delay. Stopping an
+auditor container forwards the shutdown signal to its active job.
 - MongoDB 7, Redis 7.2, and Elasticsearch 8.19
 - Juno, seeded from Nethermind's mainnet snapshot
 - Caddy for automatic HTTPS and WebSocket proxying

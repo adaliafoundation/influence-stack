@@ -51,6 +51,9 @@ jobs:
       - name: Test bootstrap resume
         run: bash scripts/test-bootstrap-resume.sh
 
+      - name: Test periodic auditor scheduling
+        run: node --test scripts/test-run-periodic.js
+
       - name: Test standalone Juno preparation
         run: bash scripts/test-prepare-juno.sh
 
