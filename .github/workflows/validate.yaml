@@ -59,8 +59,9 @@ jobs:
           test_dir="$(mktemp -d)"
           trap 'rm -rf "$test_dir"' EXIT
           printf 'test-ingestion-key' > "$test_dir/key"
+          chmod 600 "$test_dir/key"
           collector_image="$(docker compose -f compose.observability.yaml --env-file .env.example config --format json | jq -r '.services["otel-collector"].image')"
-          docker run --rm --user 0:0 \
+          docker run --rm --user 0:0 --cap-drop ALL --cap-add DAC_READ_SEARCH \
             -e OTEL_ENVIRONMENT=prerelease -e OTEL_HOST_NAME=test \
             -e OTEL_EXPORTER_OTLP_ENDPOINT=https://logs.mezmo.com/otel \
             -v "$PWD/config/otel/collector.yaml:/config.yaml:ro" \

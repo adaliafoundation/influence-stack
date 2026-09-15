@@ -18,7 +18,8 @@ References: [collector](https://docs.mezmo.com/telemetry-pipelines/otel-collecto
 
 ## Start on the Docker host
 
-From the stack checkout:
+From the stack checkout (always use `-p influence-observability`, since the core
+stack's `COMPOSE_PROJECT_NAME` in `.env` overrides the Compose file's name):
 
 ```sh
 ./stack install-secret mezmo_ingestion_key
@@ -39,10 +40,10 @@ DOCKER_CONTAINERS_PATH=/var/lib/docker/containers
 ```
 
 ```sh
-docker compose -f compose.observability.yaml run --rm --no-deps otel-collector \
+docker compose -p influence-observability -f compose.observability.yaml run --rm --no-deps otel-collector \
   validate --config=/etc/otelcol/config.yaml
-docker compose -f compose.observability.yaml up -d
-docker compose -f compose.observability.yaml logs --tail=50 -f otel-collector
+docker compose -p influence-observability -f compose.observability.yaml up -d
+docker compose -p influence-observability -f compose.observability.yaml logs --tail=50 -f otel-collector
 ```
 
 Confirm fresh records arrive at the Mezmo source and then the destination. Filter
@@ -70,11 +71,12 @@ and repeat the collector `up -d` command. Only subsequent records get new labels
   permanent ingestion errors can still lose logs; this is not an archive backup.
 - The collector uses Docker's `local` driver for its own logs to prevent feedback.
 - Root is needed to read Docker's root-owned files. The directory is mounted
-  read-only, capabilities are dropped, and no Docker socket is mounted. No host
+  read-only. Only `DAC_READ_SEARCH` is retained to read operator-owned mode-0600
+  secrets; no Docker socket is mounted. No host
   ports are published. Metrics and traces are not collected in this initial setup.
 
 To stop only collection:
 
 ```sh
-docker compose -f compose.observability.yaml stop
+docker compose -p influence-observability -f compose.observability.yaml stop
 ```

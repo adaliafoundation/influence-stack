@@ -23,6 +23,8 @@ services:
       - mezmo_ingestion_key
     read_only: true
     cap_drop: [ALL]
+    # Read operator-owned 0600 secrets without changing their permissions.
+    cap_add: [DAC_READ_SEARCH]
     security_opt: [no-new-privileges:true]
     mem_limit: 512m
     cpus: 0.5
