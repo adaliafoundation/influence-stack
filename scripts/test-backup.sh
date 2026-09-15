@@ -24,6 +24,8 @@ compose() {
     *' unpause '*) echo unpause >> "$TEST_ROOT/events" ;;
     *' pause '*) echo pause >> "$TEST_ROOT/events" ;;
     *' run '*)
+      # Match the literal variable expanded later inside mongo-tools.
+      # shellcheck disable=SC2016
       if [[ "$*" != *'@mongo:27017/?authSource=admin'* ]] ||
          [[ "$*" != *'--db="$MONGO_DATABASE"'* ]]; then
         echo 'Dump must select the application database independently of admin authentication' >&2
