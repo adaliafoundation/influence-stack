@@ -16,6 +16,7 @@ jq -e '
   (($client.ports // []) | length == 0) and
   (($client.secrets // []) | length == 0) and
   ($client.read_only == true) and
+  ($client.tmpfs == ["/tmp:size=64m,mode=1777"]) and
   (.services.caddy.depends_on["influence-client"].condition == "service_healthy") and
   (.services.caddy.depends_on["influence-server"].condition == "service_healthy") and
   ([.services.caddy.volumes[].target] | index("/etc/caddy/Caddyfile") != null) and
