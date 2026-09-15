@@ -62,8 +62,9 @@ and repeat the collector `up -d` command. Only subsequent records get new labels
 - Docker envelopes are decoded into a message body, timestamp, stream, and container
   ID. Application JSON remains a string body for downstream parsing.
 - New/recreated stack containers include the Compose service label in their log
-  envelopes. It becomes `service.name`. Existing containers have `container.id`
-  until their next recreation; do not recreate busy workers just for this label.
+  envelopes. It becomes `service.name`, overriding the default `influence` used
+  for existing containers without this label. All records also have `container.id`;
+  do not recreate busy workers just for the service label.
   Map an ID with `docker ps --no-trunc --format '{{.ID}} {{.Names}}'`.
 - Read positions and the bounded persistent export queue survive collector
   recreation in the `collector-state` Docker volume. Do not use `down -v` unless

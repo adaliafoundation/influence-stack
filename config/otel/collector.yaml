@@ -34,6 +34,9 @@ processors:
     spike_limit_mib: 64
   resource:
     attributes:
+      - key: service.name
+        value: influence
+        action: insert
       - key: service.namespace
         value: influence
         action: upsert
