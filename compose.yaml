@@ -359,7 +359,9 @@ services:
 
   influence-event-auditor:
     <<: *app-base
-    command: ["node", "src/workers/eventAuditor.js"]
+    command: ["node", "/opt/influence-stack/run-periodic.js", "${EVENT_AUDIT_INTERVAL_SECONDS:-3600}", "src/workers/eventAuditor.js"]
+    volumes:
+      - ./scripts/run-periodic.js:/opt/influence-stack/run-periodic.js:ro
     profiles: [auditor]
     labels:
       <<: *service-labels
@@ -367,7 +369,9 @@ services:
 
   influence-agreement-auditor:
     <<: *app-base
-    command: ["node", "src/workers/agreementAudit.js"]
+    command: ["node", "/opt/influence-stack/run-periodic.js", "${AGREEMENT_AUDIT_INTERVAL_SECONDS:-3600}", "src/workers/agreementAudit.js"]
+    volumes:
+      - ./scripts/run-periodic.js:/opt/influence-stack/run-periodic.js:ro
     profiles: [auditor]
     labels:
       <<: *service-labels
