@@ -1,0 +1,42 @@
+name: influence-observability
+
+services:
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.145.0@sha256:a7343f01869071ea3f4c5e1e97df1bb1b3c4d5c77247db80e053a80b9df530c4
+    restart: unless-stopped
+    user: "0:0"
+    command: ["--config=/etc/otelcol/config.yaml"]
+    environment:
+      OTEL_ENVIRONMENT: ${OTEL_ENVIRONMENT:-prerelease}
+      OTEL_HOST_NAME: ${OTEL_HOST_NAME:-influence-next}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-https://logs.mezmo.com/otel}
+    volumes:
+      - ./config/otel/collector.yaml:/etc/otelcol/config.yaml:ro
+      - type: bind
+        source: ${DOCKER_CONTAINERS_PATH:-/var/lib/docker/containers}
+        target: /var/log/docker
+        read_only: true
+        bind:
+          create_host_path: false
+      - collector-state:/var/lib/otelcol
+    secrets:
+      - mezmo_ingestion_key
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 512m
+    cpus: 0.5
+    pids_limit: 128
+    # The file receiver only reads json-file logs, avoiding a feedback loop.
+    logging:
+      driver: local
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  collector-state:
+
+secrets:
+  mezmo_ingestion_key:
+    file: ./secrets/mezmo_ingestion_key

@@ -45,6 +45,7 @@ services:
       options:
         max-size: "25m"
         max-file: "5"
+        labels: "com.docker.compose.service"
     labels:
       com.influenceth.stack.environment: production
       com.influenceth.stack.project: ${COMPOSE_PROJECT_NAME:-influence-production}
