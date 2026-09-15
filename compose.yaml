@@ -5,6 +5,7 @@ x-logging: &default-logging
   options:
     max-size: "25m"
     max-file: "5"
+    labels: "com.docker.compose.service"
 
 x-service-labels: &service-labels
   com.influenceth.stack.environment: production

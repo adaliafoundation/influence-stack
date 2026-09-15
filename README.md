@@ -459,10 +459,9 @@ only enough ETH on it for transaction fees.
 Application, database, Juno, and Caddy logs are emitted to stdout and stderr.
 Caddy and Juno emit JSON. Docker retains five 25 MB files per container locally.
 
-A Mezmo collector can use the labels under `com.influenceth.stack.*` to attach
-environment and component metadata. The collector itself is not included yet:
-provider credentials and the preferred Mezmo ingestion product should not be made
-a prerequisite for deploying the core stack.
+An optional OpenTelemetry Collector forwards Docker logs to Mezmo over OTLP/HTTP.
+It runs independently of the application stack; see [OpenTelemetry logging](docs/opentelemetry.md)
+for credentials, startup, environment labels, and collection limits.
 
 ## Security notes
 
@@ -483,7 +482,6 @@ These additions fit the design but are intentionally deferred from the first
 production bootstrap:
 
 - Prerelease/Sepolia Compose overlay
-- Bundled Mezmo, Fluent Bit, or OpenTelemetry collector profile
 - Full database reconstruction from chain origin without a Mongo dump
 - Multi-host MongoDB or Elasticsearch high availability
 - Client container and edge route, after an immutable client image is released

@@ -54,6 +54,20 @@ jobs:
       - name: Test periodic auditor scheduling
         run: node --test scripts/test-run-periodic.js
 
+      - name: Validate OpenTelemetry configuration
+        run: |
+          test_dir="$(mktemp -d)"
+          trap 'rm -rf "$test_dir"' EXIT
+          printf 'test-ingestion-key' > "$test_dir/key"
+          collector_image="$(docker compose -f compose.observability.yaml --env-file .env.example config --format json | jq -r '.services["otel-collector"].image')"
+          docker run --rm --user 0:0 \
+            -e OTEL_ENVIRONMENT=prerelease -e OTEL_HOST_NAME=test \
+            -e OTEL_EXPORTER_OTLP_ENDPOINT=https://logs.mezmo.com/otel \
+            -v "$PWD/config/otel/collector.yaml:/config.yaml:ro" \
+            -v "$test_dir/key:/run/secrets/mezmo_ingestion_key:ro" \
+            -v "$test_dir:/var/lib/otelcol" \
+            "$collector_image" validate --config=/config.yaml
+
       - name: Test standalone Juno preparation
         run: bash scripts/test-prepare-juno.sh
 

@@ -803,7 +803,7 @@ install_secret() {
   local source="${2:-}"
   local destination
   case "$name" in
-    restic_password|alchemy_juno_ethereum_ws_url|alchemy_influence_ethereum_http_url|jwt_secret|\
+    mezmo_ingestion_key|restic_password|alchemy_juno_ethereum_ws_url|alchemy_influence_ethereum_http_url|jwt_secret|\
     argent_api_key|ipfs_rpc_authorization|open_sea_api_key|\
     sendgrid_api_key|stripe_secret_key|stripe_webhook_secret|\
     avnu_paymaster_api_key|banxa_api_key|banxa_webhook_api_key|banxa_webhook_secret) ;;
