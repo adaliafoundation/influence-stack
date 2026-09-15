@@ -1018,8 +1018,9 @@ bootstrap_stack() {
   done
 
   if [ "$resume_after_indexing" -eq 1 ]; then
-    [ -z "$mongo_dump" ] && [ "$resume_after_restore" -eq 0 ] && [ "$rebuild_packed_cache" -eq 0 ] \
-      || die "--resume-after-indexing cannot be combined with other bootstrap modes or cache rebuilding"
+    if [ -n "$mongo_dump" ] || [ "$resume_after_restore" -eq 1 ] || [ "$rebuild_packed_cache" -eq 1 ]; then
+      die "--resume-after-indexing cannot be combined with other bootstrap modes or cache rebuilding"
+    fi
   elif [ "$resume_after_restore" -eq 1 ]; then
     [ -z "$mongo_dump" ] || die "Use either --mongo-dump or --resume-after-restore, not both"
   else
@@ -1114,6 +1115,8 @@ bootstrap_stack() {
 }
 
 validate_existing_search() {
+  # Template literals expand in Node inside the container, not in this shell.
+  # shellcheck disable=SC2016
   compose --profile tools run --rm --no-deps influence-tools -e '
 require("module-alias/register");
 const { client } = require("@common/storage/elasticsearch");

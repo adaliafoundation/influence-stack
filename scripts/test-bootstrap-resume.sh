@@ -57,7 +57,10 @@ wait_for_health() { echo "health $1" >> "$TEST_ROOT/actions"; }
 : > "$TEST_ROOT/actions"
 (bootstrap_stack --resume-after-indexing)
 [ -s "$STATE_DIR/bootstrap-complete" ]
-! grep -Eq '^(restore|index|snapshot)$|initialSetup|reIndex|preloadLotData' "$TEST_ROOT/actions"
+if grep -Eq '^(restore|index|snapshot)$|initialSetup|reIndex|preloadLotData' "$TEST_ROOT/actions"; then
+  echo 'Resume unexpectedly rebuilt or restored data' >&2
+  exit 1
+fi
 grep -q '^search-check$' "$TEST_ROOT/actions"
 grep -q '^health influence-server$' "$TEST_ROOT/actions"
 rm "$STATE_DIR/bootstrap-complete"
@@ -69,7 +72,10 @@ status="$?"
 set -e
 [ "$status" -ne 0 ]
 [ ! -e "$STATE_DIR/bootstrap-complete" ]
-! grep -q '^health influence-server$' "$TEST_ROOT/actions"
+if grep -q '^health influence-server$' "$TEST_ROOT/actions"; then
+  echo 'API health check ran after convergence failed' >&2
+  exit 1
+fi
 validate_existing_search() { return 1; }
 : > "$TEST_ROOT/actions"
 set +e
@@ -78,7 +84,10 @@ status="$?"
 set -e
 [ "$status" -ne 0 ]
 [ ! -e "$STATE_DIR/bootstrap-complete" ]
-! grep -q 'up -d influence-indexer' "$TEST_ROOT/actions"
+if grep -q 'up -d influence-indexer' "$TEST_ROOT/actions"; then
+  echo 'Indexer started after search validation failed' >&2
+  exit 1
+fi
 : > "$STATE_DIR/bootstrap-complete"
 expect_failure --resume-after-restore
 expect_failure --resume-after-indexing
