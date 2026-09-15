@@ -484,4 +484,3 @@ production bootstrap:
 - Prerelease/Sepolia Compose overlay
 - Full database reconstruction from chain origin without a Mongo dump
 - Multi-host MongoDB or Elasticsearch high availability
-- Client container and edge route, after an immutable client image is released

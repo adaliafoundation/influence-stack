@@ -51,6 +51,9 @@ jobs:
       - name: Test bootstrap resume
         run: bash scripts/test-bootstrap-resume.sh
 
+      - name: Test optional client configuration
+        run: bash scripts/test-client-compose.sh
+
       - name: Test periodic auditor scheduling
         run: node --test scripts/test-run-periodic.js
 

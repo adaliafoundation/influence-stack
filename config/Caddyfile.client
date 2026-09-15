@@ -1,0 +1,8 @@
+{$CLIENT_DOMAIN} {
+	encode zstd gzip
+	reverse_proxy influence-client:3000
+	log {
+		output stdout
+		format json
+	}
+}
