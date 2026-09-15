@@ -1362,7 +1362,7 @@ backup_stack() (
     --volume "${staging}:/backups" \
     mongo-tools sh -ec '
         password="$(tr -d "\r\n" < /run/secrets/mongo_root_password)"
-        uri="mongodb://${MONGO_INITDB_ROOT_USERNAME}:${password}@mongo:27017/admin?authSource=admin"
+        uri="mongodb://${MONGO_INITDB_ROOT_USERNAME}:${password}@mongo:27017/?authSource=admin"
         mongodump --uri="$uri" --db="$MONGO_DATABASE" --archive="/backups/'"$(basename "$output")"'" --gzip
       '; then
     die "MongoDB backup failed"
