@@ -84,6 +84,9 @@ compose_files() {
   export HOST_UID="${HOST_UID:-$(id -u)}"
   export HOST_GID="${HOST_GID:-$(id -g)}"
   COMPOSE_ARGS=(--env-file "$ENV_FILE" -f "${STACK_ROOT}/compose.yaml")
+  if [ "${ENABLE_CLIENT:-0}" = "1" ]; then
+    COMPOSE_ARGS+=(-f "${STACK_ROOT}/compose.client.yaml")
+  fi
   if [ "${ENABLE_PROVISIONER:-0}" = "1" ]; then
     COMPOSE_ARGS+=(-f "${STACK_ROOT}/compose.provisioner.yaml")
   fi
@@ -236,7 +239,9 @@ deployment_fingerprint() {
     compose.juno.yaml
     compose.provisioner.yaml
     compose.smoke.yaml
+    compose.client.yaml
     config/Caddyfile
+    config/Caddyfile.client
     scripts/juno-entrypoint.sh
     scripts/backup.sh
     scripts/mongo-init-app-user.sh
@@ -345,6 +350,15 @@ validate_juno_configuration() {
 
 validate_configuration() {
   validate_juno_configuration
+  if [ "${ENABLE_CLIENT:-0}" = "1" ]; then
+    validate_image_pin INFLUENCE_CLIENT_IMAGE
+    if [[ ! "${CLIENT_DOMAIN:-}" =~ ^[A-Za-z0-9.-]+$ ]] || [[ "$CLIENT_DOMAIN" == *example.com* ]]; then
+      die "Set CLIENT_DOMAIN to the client's public hostname"
+    fi
+    [ "$CLIENT_DOMAIN" != "$API_DOMAIN" ] || die "CLIENT_DOMAIN must differ from API_DOMAIN"
+    [ "$CLIENT_URL" = "https://${CLIENT_DOMAIN}" ] || die "CLIENT_URL must match https://CLIENT_DOMAIN"
+    [ -f "${STACK_ROOT}/client.env" ] || die "Copy config/client.env.example to client.env first"
+  fi
   local invalid=0
   local variable
   local value
@@ -472,6 +486,9 @@ wait_for_required_workers() {
 wait_for_required_application_health() {
   wait_for_required_workers
   wait_for_health influence-server 600
+  if [ "${ENABLE_CLIENT:-0}" = "1" ]; then
+    wait_for_health influence-client 300
+  fi
 }
 
 juno_rpc() {
@@ -1301,6 +1318,9 @@ backup_stack() (
   output="$staging/influence.archive"
   local backup_paths=("$output" "$ENV_FILE" "$STACK_ROOT/secrets" "$STACK_ROOT/config"
     "$STACK_ROOT/stack" "$STACK_ROOT/scripts" "$STACK_ROOT"/compose*.yaml)
+  if [ -f "$STACK_ROOT/client.env" ]; then
+    backup_paths+=("$STACK_ROOT/client.env")
+  fi
   if [ "${ENABLE_PROVISIONER:-0}" = "1" ]; then
     local signer="${STARTER_PACK_PRIVATE_KEY_PATH:-/etc/influence/secrets/starter_pack_admin_private_key}"
     if [ ! -r "$signer" ] || [ ! -s "$signer" ]; then

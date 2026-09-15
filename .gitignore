@@ -1,8 +1,8 @@
 .env
+client.env
 .state/
 secrets/*
 !secrets/.gitkeep
 *.archive
 *.tar
 *.tar.gz
-

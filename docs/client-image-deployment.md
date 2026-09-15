@@ -26,10 +26,11 @@ REACT_APP_CONFIG_ENV=production
 REACT_APP_API_INFLUENCE=https://api.example.com
 REACT_APP_STARKNET_PROVIDER=https://your-public-starknet-rpc.example
 REACT_APP_API_IPFS=https://your-ipfs-gateway.example/ipfs
+REACT_APP_API_AVNU=https://your-public-avnu-api.example
+REACT_APP_ETHEREUM_PROVIDER=https://your-public-ethereum-rpc.example
 ```
 
-Set `REACT_APP_STARKNET_PROVIDERBACKUP` and `REACT_APP_ETHEREUM_PROVIDER` when the
-client features in use require them. Add public client IDs such as Privy, Google,
+Set `REACT_APP_STARKNET_PROVIDERBACKUP` when needed. Add public client IDs such as Privy, Google,
 WalletConnect, Stripe, or GTM to the stack's untracked runtime configuration only
 when enabled.
 
@@ -53,9 +54,60 @@ Legacy-looking aliases such as `REACT_APP_API_URL`, `REACT_APP_DEPLOYMENT`,
 the current `src/appConfig/index.js`. They should be renamed in the client build
 configuration instead of carried into the new deployment.
 
-## Stack work still required
+## Enable client hosting
 
-The client repository now contains the multi-stage image, runtime configuration,
-tests, and release workflow. This stack still needs a client service and Caddy
-route pinned to a released client digest. Until that is added, the API stack can
-be deployed independently while the client remains on its current hosting platform.
+The optional `compose.client.yaml` adds the client and its Caddy route. Set these
+values in `.env`, using your real temporary hostnames:
+
+```dotenv
+ENABLE_CLIENT=1
+CLIENT_DOMAIN=game-next.example.com
+CLIENT_URL=https://game-next.example.com
+INFLUENCE_CLIENT_IMAGE=ghcr.io/adaliafoundation/influence-client@sha256:c23cbd73637726afc6b20b3704a32c78546feded325d2fde542a39f58110d4d4
+```
+
+`CLIENT_URL` controls the API's allowed client origin and must match the client
+hostname. `API_DOMAIN` remains the temporary API hostname. Point client DNS to the
+box before starting Caddy. The client port is accessible only inside Docker.
+
+```sh
+cp config/client.env.example client.env
+chmod 600 client.env
+```
+
+Edit `client.env` with your public mainnet RPC, IPFS gateway, and AVNU endpoints.
+These four values are required; replace all example URLs. Copy public OAuth/wallet
+client IDs and other enabled integrations from your current production client
+configuration, and allow the temporary origin at those providers. Never copy
+server secrets into this file. The API URL and network preset are supplied by
+Compose and override this file.
+
+This temporary deployment mirrors mainnet: the service explicitly uses the
+`production` preset. The client's `prerelease` preset selects testnet contracts
+and must not be used for this mainnet migration.
+
+After bootstrap, validate and refresh the integration receipt, then deploy:
+
+```sh
+./stack config
+./stack integration-test ghcr.io/adaliafoundation/influence-server@sha256:8c3924021492a11204138d719850fb79557cc1849559182668ea3aa963cfadfd
+./stack deploy
+```
+
+Use the server digest currently configured in `.env` if it has changed. Deploy
+reconciles the full stack and may recreate services whose configuration changed.
+The client image is pulled automatically if absent. Caddy waits for the client
+health check, and deploy checks client health. The server integration test does
+not test browser behavior.
+
+Verify public routing with your real client hostname:
+
+```sh
+curl -I https://game-next.example.com/healthz
+curl -fsS https://game-next.example.com/runtime-config.js
+```
+
+Expect HTTP 204 for health. Confirm runtime configuration selects `production`
+and the temporary API URL, then test loading the game, wallet login, and API calls
+in a browser. This does not perform a production DNS cutover. `client.env` is
+ignored by Git and included in off-host backups.

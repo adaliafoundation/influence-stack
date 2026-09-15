@@ -3,6 +3,8 @@
 	admin off
 }
 
+import /etc/caddy/client/*.caddy
+
 {$API_DOMAIN} {
 	encode zstd gzip
 	reverse_proxy influence-server:3001
@@ -19,4 +21,3 @@
 		format json
 	}
 }
-
