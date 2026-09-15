@@ -24,6 +24,11 @@ compose() {
     *' unpause '*) echo unpause >> "$TEST_ROOT/events" ;;
     *' pause '*) echo pause >> "$TEST_ROOT/events" ;;
     *' run '*)
+      if [[ "$*" != *'@mongo:27017/?authSource=admin'* ]] ||
+         [[ "$*" != *'--db="$MONGO_DATABASE"'* ]]; then
+        echo 'Dump must select the application database independently of admin authentication' >&2
+        return 1
+      fi
       echo dump >> "$TEST_ROOT/events"
       printf 'test database\n' > "$output"
       return "${DUMP_FAILURE:-0}"
