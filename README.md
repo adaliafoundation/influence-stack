@@ -183,6 +183,23 @@ confirmed complete restore, before the new deployment serves production traffic.
 It cannot be combined with `--mongo-dump`, and completed deployments are rejected.
 It does not skip validation or resume Elasticsearch halfway through indexing.
 
+### Resume after indexing has started
+
+If bootstrap timed out during catch-up, use this mode to preserve MongoDB,
+Elasticsearch indices, the existing index queue, and the packed lot cache:
+
+```sh
+./stack bootstrap --resume-after-indexing
+```
+
+It validates existing data, Juno, and search aliases, starts workers, waits for
+convergence and worker health, then starts the API and TLS proxy. It marks bootstrap
+complete only after API health passes. Indexing can still be in progress when this
+command starts. It does not restore a dump, seed Juno, reset search, enqueue a full
+reindex, or rebuild the packed cache. Missing prerequisites cause it to stop.
+Other bootstrap modes and `--rebuild-packed-cache` cannot be combined with it.
+Normal configuration and image integration checks still apply.
+
 ## Operations
 
 ```sh

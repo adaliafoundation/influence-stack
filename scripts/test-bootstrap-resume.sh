@@ -42,6 +42,44 @@ expect_failure() {
 }
 expect_failure --resume-after-restore --mongo-dump fixture.archive
 METRICS='{"ethereumCheckpoint":1,"starknetCheckpoint":2,"entities":0,"packedLotCacheEntries":0}' expect_failure --resume-after-restore
+expect_failure --resume-after-indexing --mongo-dump fixture.archive
+expect_failure --resume-after-indexing --resume-after-restore
+expect_failure --resume-after-indexing --rebuild-packed-cache
+METRICS='{"ethereumCheckpoint":1,"starknetCheckpoint":2,"entities":10,"packedLotCacheEntries":0}' expect_failure --resume-after-indexing
+
+# Verify resume preserves data and only completes after all health gates pass.
+install_juno_snapshot() { echo snapshot >> "$TEST_ROOT/actions"; }
+compose() { echo "compose $*" >> "$TEST_ROOT/actions"; }
+validate_existing_search() { echo search-check >> "$TEST_ROOT/actions"; }
+wait_for_convergence() { echo convergence >> "$TEST_ROOT/actions"; }
+wait_for_required_workers() { echo worker-health >> "$TEST_ROOT/actions"; }
+wait_for_health() { echo "health $1" >> "$TEST_ROOT/actions"; }
+: > "$TEST_ROOT/actions"
+(bootstrap_stack --resume-after-indexing)
+[ -s "$STATE_DIR/bootstrap-complete" ]
+! grep -Eq '^(restore|index|snapshot)$|initialSetup|reIndex|preloadLotData' "$TEST_ROOT/actions"
+grep -q '^search-check$' "$TEST_ROOT/actions"
+grep -q '^health influence-server$' "$TEST_ROOT/actions"
+rm "$STATE_DIR/bootstrap-complete"
+wait_for_convergence() { return 1; }
+: > "$TEST_ROOT/actions"
+set +e
+(set -e; bootstrap_stack --resume-after-indexing) > "$TEST_ROOT/error" 2>&1
+status="$?"
+set -e
+[ "$status" -ne 0 ]
+[ ! -e "$STATE_DIR/bootstrap-complete" ]
+! grep -q '^health influence-server$' "$TEST_ROOT/actions"
+validate_existing_search() { return 1; }
+: > "$TEST_ROOT/actions"
+set +e
+(set -e; bootstrap_stack --resume-after-indexing) > "$TEST_ROOT/error" 2>&1
+status="$?"
+set -e
+[ "$status" -ne 0 ]
+[ ! -e "$STATE_DIR/bootstrap-complete" ]
+! grep -q 'up -d influence-indexer' "$TEST_ROOT/actions"
 : > "$STATE_DIR/bootstrap-complete"
 expect_failure --resume-after-restore
+expect_failure --resume-after-indexing
 echo 'Bootstrap resume, restore, and validation checks passed'

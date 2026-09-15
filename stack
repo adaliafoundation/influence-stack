@@ -45,6 +45,8 @@ Bootstrap options:
   --mongo-dump PATH     Compressed mongodump archive for a fresh deployment
   --resume-after-restore
                         Validate existing Mongo data and continue without restoring
+  --resume-after-indexing
+                        Preserve existing data and search indices; finish catch-up
   --rebuild-packed-cache
                         Recompute packed lot data after restoring MongoDB
 EOF
@@ -990,6 +992,7 @@ prepare_juno() {
 bootstrap_stack() {
   local mongo_dump=""
   local resume_after_restore=0
+  local resume_after_indexing=0
   local rebuild_packed_cache=0
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -1002,6 +1005,10 @@ bootstrap_stack() {
         resume_after_restore=1
         shift
         ;;
+      --resume-after-indexing)
+        resume_after_indexing=1
+        shift
+        ;;
       --rebuild-packed-cache)
         rebuild_packed_cache=1
         shift
@@ -1010,7 +1017,10 @@ bootstrap_stack() {
     esac
   done
 
-  if [ "$resume_after_restore" -eq 1 ]; then
+  if [ "$resume_after_indexing" -eq 1 ]; then
+    [ -z "$mongo_dump" ] && [ "$resume_after_restore" -eq 0 ] && [ "$rebuild_packed_cache" -eq 0 ] \
+      || die "--resume-after-indexing cannot be combined with other bootstrap modes or cache rebuilding"
+  elif [ "$resume_after_restore" -eq 1 ]; then
     [ -z "$mongo_dump" ] || die "Use either --mongo-dump or --resume-after-restore, not both"
   else
     [ -n "$mongo_dump" ] || die "A Mongo dump is required for a fresh production bootstrap"
@@ -1033,13 +1043,15 @@ bootstrap_stack() {
   [ -d "${DATA_ROOT}/juno-data" ] || die "Persistent directories are missing; run ./stack prepare-host first"
   [ -d "${DATA_ROOT}/backups" ] || die "Persistent directories are missing; run ./stack prepare-host first"
 
-  install_juno_snapshot
+  if [ "$resume_after_indexing" -eq 0 ]; then
+    install_juno_snapshot
+  fi
   info "Starting persistent services"
   compose up -d mongo redis elasticsearch juno
   wait_for_health mongo
   wait_for_health redis
   wait_for_health elasticsearch 600
-  if [ "$resume_after_restore" -eq 1 ]; then
+  if [ "$resume_after_restore" -eq 1 ] || [ "$resume_after_indexing" -eq 1 ]; then
     info "Resuming with existing MongoDB data; skipping archive restore"
   else
     restore_mongo "$mongo_dump"
@@ -1057,6 +1069,7 @@ bootstrap_stack() {
     || die "Mongo dump is missing Influence entities or chain checkpoints"
   restored_starknet_checkpoint="$(jq -r '.starknetCheckpoint' <<<"$restored_metrics")"
   if [ "$(jq -r '.packedLotCacheEntries' <<<"$restored_metrics")" -eq 0 ]; then
+    [ "$resume_after_indexing" -eq 0 ] || die "Packed lot cache is missing; cannot resume after indexing"
     info "The restored dump has no packed lot cache; scheduling a rebuild"
     rebuild_packed_cache=1
   fi
@@ -1069,19 +1082,12 @@ bootstrap_stack() {
   juno_has_block "$restored_starknet_checkpoint" \
     || die "Juno does not retain the restored MongoDB checkpoint; use a full or compatible snapshot"
 
-  info "Creating and populating Elasticsearch indices"
-  reset_elasticsearch
-  compose --profile tools run --rm --no-deps influence-tools ./bin/elasticsearch.js initialSetup
-  # The quoted script expands inside Elasticsearch, not in this operator shell.
-  # shellcheck disable=SC2016
-  compose exec -T elasticsearch sh -ec '
-    password="$(tr -d "\r\n" < /run/secrets/elasticsearch_password)"
-    curl -fsS -u "elastic:${password}" -X PUT \
-      -H "content-type: application/json" \
-      --data "{\"index\":{\"number_of_replicas\":0}}" \
-      "http://localhost:9200/_all/_settings"
-  ' >/dev/null
-  compose --profile tools run --rm --no-deps influence-tools ./bin/elasticsearch.js reIndex
+  if [ "$resume_after_indexing" -eq 1 ]; then
+    info "Preserving existing Elasticsearch indices and queue"
+    validate_existing_search
+  else
+    prepare_search_indices
+  fi
   compose --profile indexer up -d influence-indexer
 
   if [ "$rebuild_packed_cache" -eq 1 ]; then
@@ -1105,6 +1111,39 @@ bootstrap_stack() {
   wait_for_health influence-server 300
   date -u +%Y-%m-%dT%H:%M:%SZ > "${STATE_DIR}/bootstrap-complete"
   info "Production stack bootstrap complete"
+}
+
+validate_existing_search() {
+  compose --profile tools run --rm --no-deps influence-tools -e '
+require("module-alias/register");
+const { client } = require("@common/storage/elasticsearch");
+const schemas = require("@common/storage/elasticsearch/schemas");
+(async () => {
+  for (const type of Object.keys(schemas)) {
+    const result = await client.indices.getAlias({ name: type });
+    const indices = result.body || result;
+    if (!Object.keys(indices).some(index => index.startsWith(`${type}_v`))) {
+      throw new Error(`Missing search index for ${type}`);
+    }
+  }
+  process.exit(0);
+})().catch(error => { console.error(error); process.exit(1); });'
+}
+
+prepare_search_indices() {
+  info "Creating and populating Elasticsearch indices"
+  reset_elasticsearch
+  compose --profile tools run --rm --no-deps influence-tools ./bin/elasticsearch.js initialSetup
+  # The quoted script expands inside Elasticsearch, not in this operator shell.
+  # shellcheck disable=SC2016
+  compose exec -T elasticsearch sh -ec '
+    password="$(tr -d "\r\n" < /run/secrets/elasticsearch_password)"
+    curl -fsS -u "elastic:${password}" -X PUT \
+      -H "content-type: application/json" \
+      --data "{\"index\":{\"number_of_replicas\":0}}" \
+      "http://localhost:9200/_all/_settings"
+  ' >/dev/null
+  compose --profile tools run --rm --no-deps influence-tools ./bin/elasticsearch.js reIndex
 }
 
 deploy_stack() {
