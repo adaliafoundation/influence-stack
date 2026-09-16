@@ -41,3 +41,7 @@ secrets:
     file: ${INTEGRATION_SECRETS_DIR:?Set INTEGRATION_SECRETS_DIR}/elasticsearch_url
   alchemy_influence_ethereum_http_url:
     file: ${INTEGRATION_SECRETS_DIR:?Set INTEGRATION_SECRETS_DIR}/alchemy_influence_ethereum_http_url
+
+# Integration containers must never join the live external proxy network.
+networks:
+  edge: !override {}

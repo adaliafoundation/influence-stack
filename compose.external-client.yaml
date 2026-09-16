@@ -1,0 +1,5 @@
+services:
+  influence-client:
+    networks:
+      edge:
+        aliases: ["${COMPOSE_PROJECT_NAME:-influence-production}-client"]

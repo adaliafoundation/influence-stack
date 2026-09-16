@@ -7,6 +7,7 @@ import /etc/caddy/client/*.caddy
 
 {$API_DOMAIN} {
 	encode zstd gzip
+	import /etc/caddy/api/*.caddy
 	reverse_proxy influence-server:3001
 
 	header {

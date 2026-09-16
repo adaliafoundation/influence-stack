@@ -11,9 +11,9 @@ cp "$REPO_ROOT/.env.example" "$ENV_FILE"
 mkdir "$TEST_ROOT/secrets"
 load_env
 API_DOMAIN=api.test.invalid
-CADDY_EMAIL=ops@test.invalid
+export CADDY_EMAIL=ops@test.invalid
 CLIENT_URL=https://game.test.invalid
-IMAGES_SERVER_URL=https://api.test.invalid
+export IMAGES_SERVER_URL=https://api.test.invalid
 INFLUENCE_SERVER_IMAGE="ghcr.io/adaliafoundation/influence-server@sha256:$(printf '%064d' 1)"
 for secret in mongo_root_password mongo_app_password mongo_url redis_password redis_url \
   elasticsearch_password elasticsearch_url jwt_secret banxa_api_key; do

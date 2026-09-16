@@ -16,16 +16,17 @@ them from a generic provider example. Payment handover needs a rehearsal.
 - Allow the temporary client origin at applicable providers. This environment
   still uses mainnet; its temporary hostname does not make transactions test-only.
 
-After configuration, use the current server digest from `.env`:
+After configuration, test the configured images:
 
 ```sh
 ./stack config
-./stack integration-test ghcr.io/adaliafoundation/influence-server@sha256:RELEASED_DIGEST
+./stack integration-test
 ./stack deploy
 ```
 
-The integration test covers datastore access, not provider authentication, payment,
-delivery, or fulfillment. Verify the feature and logs separately. Recreate affected
+The integration test covers server configuration and datastore access, plus client
+startup and served configuration/assets when enabled. It does not verify provider
+authentication, payment, delivery, or fulfillment. Verify the feature and logs separately. Recreate affected
 containers after secret rotation so credentials are reloaded.
 
 ## Inputs and acceptance checks

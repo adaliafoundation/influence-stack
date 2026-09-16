@@ -1,0 +1,19 @@
+[Unit]
+Description=Receive authenticated Influence prerelease release notifications
+Wants=network-online.target
+After=network-online.target docker.service
+
+[Service]
+Type=simple
+User=influence
+Group=influence
+WorkingDirectory=/home/influence/influence-stack
+EnvironmentFile=/home/influence/influence-stack/.state/prerelease-webhook.env
+ExecStart=/usr/bin/webhook -verbose -ip ${WEBHOOK_LISTEN_IP} -port 9000 -hooks /home/influence/influence-stack/.state/prerelease-hooks.json
+Restart=on-failure
+UMask=0077
+KillMode=control-group
+TimeoutStopSec=infinity
+
+[Install]
+WantedBy=multi-user.target

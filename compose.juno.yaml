@@ -8,7 +8,7 @@ services:
     entrypoint: ["/opt/influence-stack/juno-entrypoint.sh"]
     command:
       - --network
-      - mainnet
+      - ${JUNO_NETWORK:-mainnet}
       - --db-path
       - /var/lib/juno
       - --prune-mode=${JUNO_PRUNE_RETAINED_BLOCKS:-128}
@@ -47,7 +47,7 @@ services:
         max-file: "5"
         labels: "com.docker.compose.service"
     labels:
-      com.influenceth.stack.environment: production
+      com.influenceth.stack.environment: ${STACK_ENVIRONMENT:-production}
       com.influenceth.stack.project: ${COMPOSE_PROJECT_NAME:-influence-production}
       com.influenceth.stack.component: starknet-node
 

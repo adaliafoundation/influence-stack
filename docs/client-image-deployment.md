@@ -79,8 +79,8 @@ Edit `client.env` with your public mainnet RPC, IPFS gateway, and AVNU endpoints
 These four values are required; replace all example URLs. Copy public OAuth/wallet
 client IDs and other enabled integrations from your current production client
 configuration, and allow the temporary origin at those providers. Never copy
-server secrets into this file. The API URL and network preset are supplied by
-Compose and override this file.
+server secrets into this file. The API URL and network preset (`STACK_ENVIRONMENT`, default `production`) are
+supplied by Compose and override this file.
 
 Include provider-required API keys in browser RPC URLs, using the exact supported
 endpoint from the provider. These URLs are public in `runtime-config.js`; use
@@ -89,21 +89,25 @@ quotas, not private server credentials.
 
 This temporary deployment mirrors mainnet: the service explicitly uses the
 `production` preset. The client's `prerelease` preset selects testnet contracts
-and must not be used for this mainnet migration.
+and must not be used for this mainnet migration. For a Sepolia deployment, follow
+[Prerelease deployment](prerelease.md).
 
 After bootstrap, validate and refresh the integration receipt, then deploy:
 
 ```sh
 ./stack config
-./stack integration-test ghcr.io/adaliafoundation/influence-server@sha256:8c3924021492a11204138d719850fb79557cc1849559182668ea3aa963cfadfd
+./stack integration-test
 ./stack deploy
 ```
 
-Use the server digest currently configured in `.env` if it has changed. Deploy
-reconciles the full stack and may recreate services whose configuration changed.
-The client image is pulled automatically if absent. Caddy waits for the client
-health check, and deploy checks client health. The server integration test does
-not test browser behavior.
+The integration test uses both configured image digests. It starts the client
+without Caddy or published ports and checks health, runtime configuration, HTML,
+and JavaScript assets. A failure prevents a new integration receipt. Changing the
+client digest or public configuration requires another test. Browser behavior,
+wallet login, API compatibility, and public routing are separate acceptance checks.
+
+Deploy reconciles the full stack and may recreate services whose configuration
+changed. Caddy waits for client health, and deploy also checks client health.
 
 Verify public routing with your real client hostname:
 

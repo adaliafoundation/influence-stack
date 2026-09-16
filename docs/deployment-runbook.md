@@ -101,10 +101,11 @@ names the destination. These are independent of the Atlas cluster name/tier.
 ```sh
 ./stack install-secret alchemy_influence_ethereum_http_url
 ./stack config
-./stack integration-test ghcr.io/adaliafoundation/influence-server@sha256:RELEASED_DIGEST
+./stack integration-test
 ```
 
-Use the exact server digest configured in `.env`, never the client digest.
+The test uses the server digest in `.env` and also tests the client digest when
+`ENABLE_CLIENT=1`.
 Repeat the test after configuration changes invalidate its receipt. The test uses
 temporary stores and does not alter the restored production database.
 

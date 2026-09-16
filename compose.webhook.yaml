@@ -1,0 +1,6 @@
+services:
+  caddy:
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    volumes:
+      - ./config/Caddyfile.webhook:/etc/caddy/api/webhook.caddy:ro
