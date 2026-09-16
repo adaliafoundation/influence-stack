@@ -82,6 +82,11 @@ configuration, and allow the temporary origin at those providers. Never copy
 server secrets into this file. The API URL and network preset are supplied by
 Compose and override this file.
 
+Include provider-required API keys in browser RPC URLs, using the exact supported
+endpoint from the provider. These URLs are public in `runtime-config.js`; use
+separate browser credentials with provider-supported origin restrictions and
+quotas, not private server credentials.
+
 This temporary deployment mirrors mainnet: the service explicitly uses the
 `production` preset. The client's `prerelease` preset selects testnet contracts
 and must not be used for this mainnet migration.

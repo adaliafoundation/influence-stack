@@ -3,6 +3,19 @@
 Docker Compose deployment for running the Influence API, indexers, data stores,
 and a local Juno Starknet node on a dedicated production server.
 
+## Operator documentation
+
+Start with the [deployment runbook](docs/deployment-runbook.md) for the ordered
+path from a fresh host through a source database dump, bootstrap, acceptance
+checks, and cutover planning. It includes recovery choices for interrupted runs.
+
+- [Client deployment](docs/client-image-deployment.md): runtime configuration, DNS, and browser checks.
+- [Off-host backups](docs/off-host-backups.md): Storage Box access, encryption, retention, scheduling, and restore testing.
+- [OpenTelemetry logging](docs/opentelemetry.md): collector setup and Mezmo troubleshooting.
+- [Optional integrations](docs/optional-integrations.md): credentials, feature flags, and acceptance checks.
+
+The sections below describe the command and configuration contracts in detail.
+
 This project is inspired by
 [Chvx/influence-container-stack](https://github.com/Chvx/influence-container-stack),
 which is the current community and prerelease-oriented stack. It also reuses the
@@ -34,15 +47,15 @@ configuration.
 - Ethereum and Starknet event retrievers
 - Event processor and Elasticsearch indexer
 - Event and agreement auditors
+- MongoDB 7, Redis 7.2, and Elasticsearch 8.19
+- Juno, seeded from Nethermind's mainnet snapshot
+- Caddy for automatic HTTPS and WebSocket proxying
 
 The event and agreement auditors run once when their containers start, then wait
 one hour after each run completes before running again. Configure the delays with
 `EVENT_AUDIT_INTERVAL_SECONDS` and `AGREEMENT_AUDIT_INTERVAL_SECONDS` (both default
 to `3600`). Runs do not overlap, and failed runs use the same delay. Stopping an
 auditor container forwards the shutdown signal to its active job.
-- MongoDB 7, Redis 7.2, and Elasticsearch 8.19
-- Juno, seeded from Nethermind's mainnet snapshot
-- Caddy for automatic HTTPS and WebSocket proxying
 
 Only HTTP and HTTPS are publicly exposed. Juno RPC is bound to localhost for
 operator health checks; MongoDB, Redis, and Elasticsearch are available only on
@@ -54,7 +67,7 @@ Fluent Bit, or an OpenTelemetry collector without coupling the stack to one vend
 
 ## Requirements
 
-- A dedicated Linux server with Docker Engine and Docker Compose v2
+- A dedicated Linux server with Docker Engine and the Docker Compose plugin (`docker compose`)
 - An x86-64 host (the current Influence production image is built for `linux/amd64`)
 - `curl`, `jq`, OpenSSL, GNU tar, `sha256sum`, and `zstd` on the host
 - Fast SSD or NVMe storage mounted at `/influencedata` by default
@@ -114,7 +127,18 @@ its path as the second argument. Optional provider credentials only need to be
 installed when their corresponding feature is enabled. See
 [Configuration and secrets](#configuration-and-secrets) for the full contract.
 
-With Docker running, exercise an immutable Influence server image and all three
+Edit `.env`, replacing the example domains, URLs, and server image pin. Then prepare
+the persistent directories and validate the resulting Compose configuration:
+
+```sh
+./stack prepare-host
+./stack config
+```
+
+The Alchemy endpoints are secret files, not `.env` entries; only replace the
+domains, image pin, and other non-secret settings in `.env`.
+
+With Docker running and configuration complete, exercise an immutable Influence server image and all three
 local data stores without downloading Juno or requiring a Mongo dump:
 
 ```sh
@@ -134,17 +158,6 @@ effective production Compose configuration and deployment scripts under `.state/
 `bootstrap`, `deploy`, and `update` refuse to use a different digest or changed
 stack configuration until the integration test is run again. Set the same digest
 as `INFLUENCE_SERVER_IMAGE` in `.env` before deploying.
-
-Edit `.env`, replacing the example domains, URLs, and server image pin. Then prepare
-the persistent directories and validate the resulting Compose configuration:
-
-```sh
-./stack prepare-host
-./stack config
-```
-
-The Alchemy endpoints are secret files, not `.env` entries; only replace the
-domains, image pin, and other non-secret settings in `.env`.
 
 Bootstrap the entire stack from a MongoDB archive:
 
@@ -253,7 +266,7 @@ Configuration is split by sensitivity and by when it is consumed:
 | Stack and server non-secrets | `.env` on the server | Container startup |
 | Server/provider secrets | `secrets/`, via `./stack install-secret` | Container startup |
 | Starter-pack signer key | `/etc/influence/secrets`, via `./stack install-signer-key` | API startup when provisioning is enabled |
-| Client `REACT_APP_*` values | Stack/deployer environment | Client container startup; always public |
+| Client `REACT_APP_*` values | `client.env` when client hosting is enabled | Client container startup; always public |
 
 The normal server setup therefore has one `.env` file and two prompted Alchemy
 values. Internal passwords are generated automatically. Stripe, SendGrid, Banxa,
@@ -453,6 +466,13 @@ supported by Influence Server:
 
 Use a dedicated account authorized only for the required Dispatcher role and keep
 only enough ETH on it for transaction fees.
+
+## Banxa checkout
+
+Banxa uses authenticated order polling to refresh status directly from its API.
+Install `banxa_api_key`, set `BANXA_PARTNER_REF`, and enable
+`BANXA_CHECKOUT_ENABLED=1`. Webhook credentials are not required. See the
+[polling setup](docs/optional-integrations.md#banxa-polling-setup) for details.
 
 ## Logging
 

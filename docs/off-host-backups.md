@@ -78,12 +78,27 @@ cannot be decrypted without it. The password file is excluded from snapshots.
 `backup-init` is an explicit one-time repository creation; subsequent backups never
 initialize repositories automatically.
 
+To check for an existing password without displaying it:
+
+```sh
+if [ -s secrets/restic_password ]; then
+  stat -c 'Permissions: %a | Owner: %U' secrets/restic_password
+else
+  echo 'Backup password is missing or empty'
+fi
+```
+
+Expect mode `600`, owned by `influence`. Once initialized,
+`./stack backup-repository snapshots` verifies both remote access and the password.
+Do not replace an existing repository's password file with a newly generated value.
+
 ## What is saved
 
 Each successful snapshot contains:
 
 - A gzip-compressed MongoDB archive with application writers paused during its creation.
 - The stack `.env`, application secrets, Compose files, scripts, and configuration.
+- `client.env` when present.
 - The configured provisioner signer key when provisioning is enabled.
 
 Juno, Redis, and Elasticsearch data are not copied. Juno can be downloaded again;
@@ -103,6 +118,20 @@ configured host and tag. Multiple snapshots can satisfy both rules. Restic prune
 unreferenced data after a successful upload; a retention failure still makes the
 command fail even though the new snapshot has been uploaded. Do not budget for
 large deduplication savings between gzip archives.
+
+Retention runs as part of every successful `./stack backup`; no separate deletion
+cron is needed. Seven daily plus four weekly is not necessarily eleven snapshots:
+one snapshot can satisfy both rules. Host/tag identity should remain stable so the
+policy continues to cover the intended snapshots. Do not manually delete repository
+files through SFTP. Preview the default policy without deleting anything:
+
+```sh
+./stack backup-repository forget --host influence-production --tag influence-production \
+  --group-by host,tags --keep-daily 7 --keep-weekly 4 --dry-run
+```
+
+Substitute your configured host, tag, and retention counts if different. Size the
+repository from actual snapshot growth, with room for a new upload before pruning.
 
 ## Enable the daily schedule
 
@@ -168,3 +197,59 @@ to bootstrap on a fresh recovery deployment. Review restored configuration/secre
 before installing them. Recover the encryption password and SSH access independently
 if the original server is lost; install Restic and reconnect to the same repository
 without running `backup-init` again.
+
+### Test the Mongo archive in isolation
+
+After restoring files into the private directory above, set `archive` to the
+actual restored archive path. This test uses a disposable Mongo container with no
+network access or published ports, and never connects to the live database:
+
+```sh
+archive=/home/influence/backup-restore/influencedata/backups/pending.REPLACE/influence.archive
+test -s "$archive"
+mongo_image="$(docker compose -f compose.yaml config --format json | jq -r '.services.mongo.image')"
+docker run -d --name influence-restore-check --network none \
+  --mount "type=bind,src=$archive,dst=/restore/influence.archive,readonly" \
+  "$mongo_image"
+docker logs --tail=30 influence-restore-check
+docker exec influence-restore-check mongosh --quiet --eval 'db.adminCommand({ping: 1})'
+```
+
+Wait for a successful ping before continuing. Restore the application database
+(replace `influence` if `MONGO_DATABASE` differs):
+
+```sh
+docker exec influence-restore-check mongorestore \
+  --archive=/restore/influence.archive --gzip --nsInclude='influence.*' --stopOnError
+docker exec influence-restore-check mongosh --quiet influence \
+  --eval 'db.getCollectionNames().sort().forEach(n => print(n + ": " + db.getCollection(n).countDocuments({})))'
+```
+
+Require a nonzero restored document count, zero failures, and expected application
+collections. Counts may take time. This verifies archive restoration; full disaster
+recovery also requires rehearsing bootstrap and application checks on a separate
+host, including Juno checkpoint availability.
+
+When finished, remove only this disposable container and its anonymous volumes:
+
+```sh
+docker rm -fv influence-restore-check
+```
+
+The restored files include secrets. Keep their directory private and remove it
+when the recovery exercise is complete.
+
+## Troubleshooting
+
+| Symptom | Action |
+| --- | --- |
+| `Required command not found: restic` | Install the host packages listed at the start of this guide. |
+| SSH or repository access fails | Test `sftp influence-backup` as the operator; check key, host trust, username, and repository path. |
+| Password file missing or repository cannot be decrypted | Recover the existing encryption password from its external recovery copy. |
+| Mongo URI selects `admin` but `--db` selects `influence` | Update the checkout: backup must use `/?authSource=admin` with the data database selected separately. |
+| Dump or upload fails | Check logs and writer status. The failure handler attempts to unpause writers. Failed staging directories remain under `${DATA_ROOT}/backups`; inspect before removing them. |
+| Retention fails after upload | Confirm the new snapshot exists, investigate the failure, and retry the retention policy. An uploaded snapshot can exist even though the overall command failed. |
+
+`check` validates repository structure; `check --read-data` also reads stored data.
+Neither replaces a Mongo restore test. Keep the Restic password and SSH recovery
+access outside the server; the password is deliberately excluded from snapshots.
