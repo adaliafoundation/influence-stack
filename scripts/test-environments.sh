@@ -25,7 +25,8 @@ check_environment() {
       select(.key | startswith("influence-")) | select(.key != "influence-client") |
       .value.environment] | length == 8 and all(
         .NODE_ENV == $environment and .HEALTH_NAMESPACE == $environment
-        and .STARKNET_RPC_PROVIDER == "http://juno:6060/v0_8"))
+        and .STARKNET_RPC_PROVIDER == "http://juno:6060/v0_10"
+        and .STARKNET_EVENT_RETRIEVER_RPC_PROVIDER == "http://juno:6060/v0_10"))
     and (.services["influence-client"].environment.NODE_ENV == "production")
     and (.services["influence-client"].environment.REACT_APP_CONFIG_ENV == $environment)
     and (.services.juno.command[1] == $network)
@@ -39,7 +40,7 @@ check_environment() {
 }
 
 # A pre-existing production .env need not gain any new settings.
-sed '/^STACK_ENVIRONMENT=/d; /^JUNO_NETWORK=/d; /^HEALTH_NAMESPACE=/d' \
+sed '/^STACK_ENVIRONMENT=/d; /^JUNO_NETWORK=/d; /^HEALTH_NAMESPACE=/d; /^JUNO_RPC_VERSION=/d' \
   "$ENV_FILE" > "$TEST_ROOT/legacy.env"
 mv "$TEST_ROOT/legacy.env" "$ENV_FILE"
 check_environment production mainnet

@@ -435,12 +435,20 @@ The `latest` snapshot URL intentionally fails closed when Nethermind advances it
 to a different Juno database version. Update and test the pinned image, digest,
 and `JUNO_SNAPSHOT_EXPECTED_VERSION` together before retrying.
 
-Juno is pinned by release and image digest to v0.16.6 and exposes RPC v0.8 to
+Juno is pinned by release and image digest to v0.16.6 and exposes RPC v0.10 to
 Influence. It runs with a 128-block floor plus a 720-hour minimum age, so at least
 30 days of block data are retained after the node has accumulated that history.
-The v0.16 release defaults to RPC v0.10 and no longer supports v0.7, so callers
-must retain the explicit `/v0_8` endpoint until Influence is verified against a
-newer RPC.
+The stack explicitly selects `/v0_10` for both application RPC providers and its
+host-side Juno checks. Use server/client images with RPC v0.10 support and configure
+browser RPC providers, including backup providers, for v0.10 as well.
+
+When upgrading an existing deployment, set `JUNO_RPC_VERSION=v0_10` in `.env`;
+`./stack init` preserves an existing explicit value. If the setting is absent,
+the new default takes effect on the next deployment. This applies to production
+as well as prerelease. Deploy compatible application images together with the
+endpoint change, rerun `./stack integration-test`, and verify wallet login and
+event retrieval against the running node. The isolated integration test does not
+contact Juno or external browser RPC providers.
 
 The Starknet event retriever does not start until Juno reports synchronization
 complete, its readiness endpoint passes, and the restored MongoDB checkpoint can
