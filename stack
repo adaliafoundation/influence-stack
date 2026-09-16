@@ -25,13 +25,16 @@ Commands:
                         Prompt for, or import, a provider/application secret
   prepare-host          Create and permission persistent data directories
   install-signer-key    Install the Starknet signer key with protected permissions
-  config                Validate and render the production Compose config
-  integration-test IMAGE
-                        Test an immutable server image with disposable local stores
+  config                Validate and render the selected Compose config
+  integration-test [SERVER_IMAGE]
+                        Test configured images with disposable local stores;
+                        optionally override the server image digest
   prepare-juno          Seed and synchronize Juno before obtaining a Mongo dump
   bootstrap             Restore a Mongo dump, seed Juno, rebuild search, and catch up
-  deploy                Start an already-bootstrapped production stack
-  update                Pull current images and recreate the production stack
+  deploy                Start an already-bootstrapped stack
+  update                Pull current images and recreate the selected stack
+  prerelease-update     Test, back up, and deploy published prerelease app images
+  configure-webhook     Generate the authenticated prerelease webhook configuration
   restart-juno          Gracefully restart Juno and gate the Starknet retriever
   upgrade-juno          Safely apply a changed immutable Juno image pin
   status                Show service and convergence status
@@ -77,7 +80,28 @@ load_env() {
     fi
     export "$key=$value"
   done < "$ENV_FILE"
+  validate_environment
   prepare_optional_secret_paths
+}
+
+validate_environment() {
+  case "${STACK_ENVIRONMENT:-production}:${JUNO_NETWORK:-mainnet}" in
+    production:mainnet|prerelease:sepolia) ;;
+    *) die "Set STACK_ENVIRONMENT=production with JUNO_NETWORK=mainnet, or STACK_ENVIRONMENT=prerelease with JUNO_NETWORK=sepolia" ;;
+  esac
+  case "${EDGE_MODE:-managed}" in
+    managed|external) ;;
+    *) die "EDGE_MODE must be managed or external" ;;
+  esac
+  if [ "${ENABLE_PRERELEASE_UPDATES:-0}" = 1 ] && [ "${STACK_ENVIRONMENT:-production}" != prerelease ]; then
+    die "Automatic updates are prerelease-only"
+  fi
+  # Reject the other network's official snapshot before downloading or reusing data.
+  case "${JUNO_NETWORK:-mainnet}:${JUNO_SNAPSHOT_URL:-}" in
+    mainnet:https://juno-snapshots.nethermind.io/files/sepolia/*|mainnet:https://juno-snapshots.nethermind.io/files/sepolia-pruned/*|\
+    sepolia:https://juno-snapshots.nethermind.io/files/mainnet/*|sepolia:https://juno-snapshots.nethermind.io/files/mainnet-pruned/*)
+      die "JUNO_SNAPSHOT_URL does not match JUNO_NETWORK" ;;
+  esac
 }
 
 compose_files() {
@@ -86,6 +110,15 @@ compose_files() {
   COMPOSE_ARGS=(--env-file "$ENV_FILE" -f "${STACK_ROOT}/compose.yaml")
   if [ "${ENABLE_CLIENT:-0}" = "1" ]; then
     COMPOSE_ARGS+=(-f "${STACK_ROOT}/compose.client.yaml")
+  fi
+  if [ "${ENABLE_PRERELEASE_UPDATES:-0}" = "1" ]; then
+    COMPOSE_ARGS+=(-f "${STACK_ROOT}/compose.webhook.yaml")
+  fi
+  if [ "${EDGE_MODE:-managed}" = "external" ]; then
+    COMPOSE_ARGS+=(-f "${STACK_ROOT}/compose.external-edge.yaml")
+    if [ "${ENABLE_CLIENT:-0}" = "1" ]; then
+      COMPOSE_ARGS+=(-f "${STACK_ROOT}/compose.external-client.yaml")
+    fi
   fi
   if [ "${ENABLE_PROVISIONER:-0}" = "1" ]; then
     COMPOSE_ARGS+=(-f "${STACK_ROOT}/compose.provisioner.yaml")
@@ -240,12 +273,18 @@ deployment_fingerprint() {
     compose.provisioner.yaml
     compose.smoke.yaml
     compose.client.yaml
+    compose.external-edge.yaml
+    compose.external-client.yaml
+    compose.webhook.yaml
     config/Caddyfile
     config/Caddyfile.client
+    config/Caddyfile.webhook
     scripts/juno-entrypoint.sh
     scripts/backup.sh
     scripts/mongo-init-app-user.sh
     scripts/mongo-entrypoint.sh
+    scripts/check-client-image.js
+    scripts/prerelease-update.sh
   )
   {
     compose --profile indexer --profile auditor --profile tools config --format json
@@ -273,7 +312,7 @@ require_integration_test() {
   local tested_fingerprint
   local tested_image
   [ -s "$INTEGRATION_RECEIPT" ] \
-    || die "Run ./stack integration-test \"$INFLUENCE_SERVER_IMAGE\" before deploying"
+    || die "Run ./stack integration-test before deploying"
   tested_image="$(awk -F= '$1 == "image" { sub(/^[^=]*=/, ""); print; exit }' "$INTEGRATION_RECEIPT")"
   tested_fingerprint="$(awk -F= '$1 == "fingerprint" { print $2; exit }' "$INTEGRATION_RECEIPT")"
   [ "$tested_image" = "$INFLUENCE_SERVER_IMAGE" ] \
@@ -608,7 +647,8 @@ download_juno_snapshot() {
 install_juno_snapshot() {
   local juno_dir="${DATA_ROOT}/juno-data"
   local download_dir="${DATA_ROOT}/downloads"
-  local archive="${download_dir}/juno-mainnet.tar.zst"
+  local network="${JUNO_NETWORK:-mainnet}"
+  local archive="${download_dir}/juno-${network}.tar.zst"
   local partial_metadata="${archive}.part.metadata"
   local headers
   local content_length
@@ -627,7 +667,7 @@ install_juno_snapshot() {
     return 0
   fi
 
-  info "Inspecting the Juno mainnet snapshot"
+  info "Inspecting the Juno ${network} snapshot"
   headers="$(juno_snapshot_headers)"
   content_length="${headers%%$'\n'*}"
   disposition="${headers#*$'\n'}"
@@ -656,7 +696,7 @@ install_juno_snapshot() {
   (( available_kb >= required_kb )) \
     || die "Insufficient free space for the snapshot download and extraction reserve"
 
-  info "Downloading the Juno mainnet snapshot (resumable)"
+  info "Downloading the Juno ${network} snapshot (resumable)"
   download_juno_snapshot "${archive}.part" "$headers"
   [ "$(wc -c < "${archive}.part")" -eq "$content_length" ] \
     || die "Downloaded snapshot size does not match the server metadata"
@@ -675,10 +715,10 @@ install_juno_snapshot() {
   tar --use-compress-program=unzstd -xf "$archive" -C "$stage"
 
   source_dir="$stage"
-  if [ -d "${stage}/juno_mainnet" ]; then
-    source_dir="${stage}/juno_mainnet"
-  elif [ -d "${stage}/juno_mainnet_pruned" ]; then
-    source_dir="${stage}/juno_mainnet_pruned"
+  if [ -d "${stage}/juno_${network}" ]; then
+    source_dir="${stage}/juno_${network}"
+  elif [ -d "${stage}/juno_${network}_pruned" ]; then
+    source_dir="${stage}/juno_${network}_pruned"
   fi
 
   shopt -s dotglob nullglob
@@ -818,7 +858,7 @@ install_secret() {
   local source="${2:-}"
   local destination
   case "$name" in
-    mezmo_ingestion_key|restic_password|alchemy_juno_ethereum_ws_url|alchemy_influence_ethereum_http_url|jwt_secret|\
+    prerelease_webhook_token|mezmo_ingestion_key|restic_password|alchemy_juno_ethereum_ws_url|alchemy_influence_ethereum_http_url|jwt_secret|\
     argent_api_key|ipfs_rpc_authorization|open_sea_api_key|\
     sendgrid_api_key|stripe_secret_key|stripe_webhook_secret|\
     avnu_paymaster_api_key|banxa_api_key|banxa_webhook_api_key|banxa_webhook_secret) ;;
@@ -889,17 +929,22 @@ config_stack() {
   compose_files
   validate_application_images
   compose --profile indexer --profile auditor --profile tools config >/dev/null
-  info "Production Compose configuration is valid"
+  info "${STACK_ENVIRONMENT:-production} Compose configuration is valid"
 }
 
 integration_test() {
-  [ "$#" -eq 1 ] || die "Usage: ./stack integration-test IMAGE@sha256:DIGEST"
+  [ "$#" -le 1 ] || die "Usage: ./stack integration-test [SERVER_IMAGE@sha256:DIGEST]"
   require_command docker
   require_command jq
   require_command openssl
   load_env
-  export INFLUENCE_SERVER_IMAGE="$1"
+  if [ "$#" -eq 1 ]; then
+    export INFLUENCE_SERVER_IMAGE="$1"
+  fi
   validate_image_pin INFLUENCE_SERVER_IMAGE
+  if [ "${ENABLE_CLIENT:-0}" = "1" ]; then
+    validate_image_pin INFLUENCE_CLIENT_IMAGE
+  fi
   validate_image_pin MONGO_IMAGE
   validate_image_pin REDIS_IMAGE
   validate_image_pin ELASTICSEARCH_IMAGE
@@ -951,13 +996,19 @@ require('module-alias/register');
 const { mongoose } = require('@common/storage/db');
 const redis = require('@common/lib/redis');
 const { client: elasticsearch } = require('@common/storage/elasticsearch');
+const config = require('config');
 (async () => {
+  const expectedChain = { production: 'SN_MAIN', prerelease: 'SN_SEPOLIA' }[process.env.NODE_ENV];
+  if (!expectedChain || config.get('Starknet.chainSlug') !== expectedChain) {
+    throw new Error('Server image Starknet configuration does not match the selected environment');
+  }
   await mongoose.connection.asPromise();
   await mongoose.connection.db.admin().ping();
   await redis.set('influence-stack-smoke', 'ok', 10_000);
   if (await redis.get('influence-stack-smoke') !== 'ok') throw new Error('Redis round trip failed');
   const elasticsearchInfo = await elasticsearch.info();
   console.log(JSON.stringify({
+    chain: expectedChain,
     mongo: 'ok',
     redis: 'ok',
     elasticsearch: elasticsearchInfo.version.number
@@ -972,6 +1023,13 @@ EOF
 
   info "Testing authenticated connections from the selected Influence image"
   compose --profile tools run --rm --no-deps influence-tools -e "$script"
+  if [ "${ENABLE_CLIENT:-0}" = "1" ]; then
+    info "Testing the configured client digest: $INFLUENCE_CLIENT_IMAGE"
+    compose pull influence-client
+    compose up -d --no-deps influence-client
+    wait_for_health influence-client 300
+    compose exec -T influence-client node < "${STACK_ROOT}/scripts/check-client-image.js"
+  fi
   compose down --volumes --remove-orphans
   rm -rf -- "$integration_secrets_dir"
   trap - EXIT
@@ -1039,7 +1097,7 @@ bootstrap_stack() {
   elif [ "$resume_after_restore" -eq 1 ]; then
     [ -z "$mongo_dump" ] || die "Use either --mongo-dump or --resume-after-restore, not both"
   else
-    [ -n "$mongo_dump" ] || die "A Mongo dump is required for a fresh production bootstrap"
+    [ -n "$mongo_dump" ] || die "A Mongo dump is required for a fresh bootstrap"
   fi
   [ ! -e "${STATE_DIR}/bootstrap-complete" ] || die "This stack is already bootstrapped"
   require_command curl
@@ -1123,10 +1181,13 @@ bootstrap_stack() {
   wait_for_required_workers
 
   info "Starting API and TLS edge"
-  compose --profile indexer --profile auditor up -d influence-server caddy
+  local edge_services=(influence-server)
+  if [ "${EDGE_MODE:-managed}" = "managed" ]; then edge_services+=(caddy); fi
+  if [ "${ENABLE_CLIENT:-0}" = "1" ]; then edge_services+=(influence-client); fi
+  compose --profile indexer --profile auditor up -d "${edge_services[@]}"
   wait_for_health influence-server 300
   date -u +%Y-%m-%dT%H:%M:%SZ > "${STATE_DIR}/bootstrap-complete"
-  info "Production stack bootstrap complete"
+  info "${STACK_ENVIRONMENT:-production} stack bootstrap complete"
 }
 
 validate_existing_search() {
@@ -1397,6 +1458,8 @@ main() {
     bootstrap) bootstrap_stack "$@" ;;
     deploy) deploy_stack "$@" ;;
     update) update_stack "$@" ;;
+    prerelease-update) prerelease_update "$@" ;;
+    configure-webhook) configure_prerelease_webhook "$@" ;;
     restart-juno) restart_juno "$@" ;;
     upgrade-juno) upgrade_juno "$@" ;;
     status) status_stack "$@" ;;
@@ -1411,6 +1474,8 @@ main() {
 
 # shellcheck source=scripts/backup.sh
 source "$STACK_ROOT/scripts/backup.sh"
+# shellcheck source=scripts/prerelease-update.sh
+source "$STACK_ROOT/scripts/prerelease-update.sh"
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
   main "$@"

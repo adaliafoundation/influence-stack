@@ -50,11 +50,27 @@ jobs:
       - name: Test snapshot download recovery
         run: bash scripts/test-juno-download.sh
 
+      - name: Test snapshot installation for both networks
+        run: bash scripts/test-juno-snapshot.sh
+
       - name: Test bootstrap resume
         run: bash scripts/test-bootstrap-resume.sh
 
       - name: Test optional client configuration
         run: bash scripts/test-client-compose.sh
+
+      - name: Test production and prerelease configuration
+        run: bash scripts/test-environments.sh
+
+      - name: Test integration command and client image probe
+        run: |
+          bash scripts/test-integration-command.sh
+          node --test scripts/test-client-image.js
+
+      - name: Test external proxy and prerelease deployment
+        run: |
+          bash scripts/test-external-edge.sh
+          bash scripts/test-prerelease-update.sh
 
       - name: Test periodic auditor scheduling
         run: node --test scripts/test-run-periodic.js

@@ -1,0 +1,18 @@
+services:
+  caddy:
+    profiles: [managed-edge]
+
+  influence-server:
+    networks:
+      edge:
+        aliases: ["${COMPOSE_PROJECT_NAME:-influence-production}-api"]
+
+  juno:
+    networks:
+      edge:
+        aliases: ["${COMPOSE_PROJECT_NAME:-influence-production}-juno"]
+
+networks:
+  edge:
+    external: true
+    name: ${EDGE_NETWORK:?Set EDGE_NETWORK to the existing proxy network}

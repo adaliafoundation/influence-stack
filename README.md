@@ -1,7 +1,27 @@
-# Influence production stack
+# Influence deployment stack
 
 Docker Compose deployment for running the Influence API, indexers, data stores,
-and a local Juno Starknet node on a dedicated production server.
+and a local Juno Starknet node on a dedicated server. Production/mainnet is the
+default; prerelease/Sepolia is also supported.
+
+## Acknowledgment: Chvx's foundational work
+
+This stack was inspired by **[Chvx's influence-container-stack](https://github.com/Chvx/influence-container-stack)**.
+Chvx made a substantial contribution by putting together and documenting a
+practical, containerized Influence environment for the community: the client and
+API, MongoDB, Redis, Elasticsearch, event retrieval and processing, and a local
+Juno node running against Starknet Sepolia.
+
+The original repository's service layout and hands-on instructions for preparing
+persistent storage, synchronizing Juno, restoring a prerelease database, building
+search indices, and rebuilding the packed lot cache directly informed this
+project. That work provided an important foundation for the deployment approach
+here. **Thank you, Chvx, for making Influence easier to run and develop locally.**
+
+This repository extends those ideas into an operational deployment stack with
+immutable images, managed secrets, health checks, TLS, and off-host backups. See
+the [original repository and guide](https://github.com/Chvx/influence-container-stack)
+for the community development setup and the inspiration behind this project.
 
 ## Operator documentation
 
@@ -9,6 +29,9 @@ Start with the [deployment runbook](docs/deployment-runbook.md) for the ordered
 path from a fresh host through a source database dump, bootstrap, acceptance
 checks, and cutover planning. It includes recovery choices for interrupted runs.
 
+- [Automatic prerelease deployment](docs/prerelease-deployments.md): release webhooks, digest updates, and recovery.
+- [External proxy](docs/external-proxy.md): use your own reverse proxy instead of managed Caddy.
+- [Prerelease deployment](docs/prerelease.md): Sepolia setup, local development clients, and production compatibility.
 - [Client deployment](docs/client-image-deployment.md): runtime configuration, DNS, and browser checks.
 - [Off-host backups](docs/off-host-backups.md): Storage Box access, encryption, retention, scheduling, and restore testing.
 - [OpenTelemetry logging](docs/opentelemetry.md): collector setup and Mezmo troubleshooting.
@@ -16,15 +39,13 @@ checks, and cutover planning. It includes recovery choices for interrupted runs.
 
 The sections below describe the command and configuration contracts in detail.
 
-This project is inspired by
-[Chvx/influence-container-stack](https://github.com/Chvx/influence-container-stack),
-which is the current community and prerelease-oriented stack. It also reuses the
-official container image, worker commands, Elasticsearch tooling, and provisioner
-key-file contract from
+This project also reuses the official container image, worker commands,
+Elasticsearch tooling, and provisioner key-file contract from
 [adaliafoundation/influence-server](https://github.com/adaliafoundation/influence-server).
 
-The initial release targets Starknet and Ethereum mainnet. A prerelease overlay is
-planned, but is intentionally not included until the production workflow is proven.
+Set `STACK_ENVIRONMENT=prerelease` and `JUNO_NETWORK=sepolia` for a separate
+Sepolia deployment. Follow [Prerelease deployment](docs/prerelease.md) for the
+matching providers, snapshot, domains, and data settings.
 
 ## Relationship to the Chvx stack
 
@@ -37,9 +58,8 @@ Production has materially different boundaries: released server images instead o
 live source mounts, generated service credentials, role-scoped application secrets,
 automatic TLS, restore validation, ordered catch-up, health gates, backups, and
 provider-ready logging. Keeping those concerns here avoids complicating the simple
-community development stack. A future prerelease overlay can reuse this repository's
-production machinery while replacing only network, image, database, and endpoint
-configuration.
+community development stack. Prerelease uses the same deployment machinery with
+its own network, image, database, and endpoint configuration.
 
 ## What it runs
 
@@ -48,7 +68,7 @@ configuration.
 - Event processor and Elasticsearch indexer
 - Event and agreement auditors
 - MongoDB 7, Redis 7.2, and Elasticsearch 8.19
-- Juno, seeded from Nethermind's mainnet snapshot
+- Juno, seeded from a compatible snapshot for the selected network
 - Caddy for automatic HTTPS and WebSocket proxying
 
 The event and agreement auditors run once when their containers start, then wait
@@ -138,26 +158,46 @@ the persistent directories and validate the resulting Compose configuration:
 The Alchemy endpoints are secret files, not `.env` entries; only replace the
 domains, image pin, and other non-secret settings in `.env`.
 
-With Docker running and configuration complete, exercise an immutable Influence server image and all three
-local data stores without downloading Juno or requiring a Mongo dump:
+With Docker running and configuration complete, test the images configured in
+`.env` without downloading Juno or requiring a Mongo dump:
 
 ```sh
-./stack integration-test \
-  ghcr.io/adaliafoundation/influence-server@sha256:replace-with-released-digest
+./stack integration-test
 ```
 
-The test pulls that exact digest and the dependency images pinned by this stack.
-It creates unique credentials, a temporary Compose project, and temporary volumes;
-then verifies authenticated MongoDB, Redis, and Elasticsearch access from the
-released server image. All test credentials, containers, and volumes are removed
-afterward. On ARM-based Macs, Docker Desktop emulates the production `linux/amd64`
-application container while the datastore containers run natively.
+The test uses `INFLUENCE_SERVER_IMAGE` and the pinned datastore images. It creates
+unique credentials, a temporary Compose project, and temporary volumes, then checks
+the selected chain preset and authenticated MongoDB, Redis, and Elasticsearch
+access from the released server image.
+
+When `ENABLE_CLIENT=1`, `INFLUENCE_CLIENT_IMAGE` must also be pinned by digest. The
+same test pulls and starts that image with the configured public `client.env` and
+Compose overrides. It checks health, served runtime configuration (including the
+network preset, API URL, and provider URLs), HTML, and JavaScript assets. It does
+not start Caddy, publish client ports, or contact the real API or providers. This
+is an image smoke test, not a browser or end-to-end test: wallet login, browser
+execution, API compatibility, and public TLS routing still need acceptance checks.
+With client hosting disabled, no client image is required or tested.
+
+All test credentials, containers, and volumes are removed afterward. On ARM-based
+Macs, Docker Desktop emulates the production `linux/amd64` server container while
+the datastore containers run natively.
+
+An optional argument tests a candidate server image without editing `.env`:
+
+```sh
+./stack integration-test ghcr.io/adaliafoundation/influence-server@sha256:CANDIDATE_DIGEST
+```
+
+The override applies only to the server; an enabled client still uses its digest
+from `.env`. Set the tested server digest in `.env` before deploying it.
 
 A passing test records the selected server digest and a fingerprint of the
-effective production Compose configuration and deployment scripts under `.state/`.
-`bootstrap`, `deploy`, and `update` refuse to use a different digest or changed
-stack configuration until the integration test is run again. Set the same digest
-as `INFLUENCE_SERVER_IMAGE` in `.env` before deploying.
+effective Compose configuration and deployment scripts under `.state/`. That
+fingerprint includes the enabled client image digest and rendered public runtime
+configuration. Changing either image, client configuration, or other fingerprinted
+inputs requires a fresh test before `bootstrap`, `deploy`, or `update`. The receipt
+is written only after all enabled checks pass.
 
 Bootstrap the entire stack from a MongoDB archive:
 
@@ -219,7 +259,7 @@ Normal configuration and image integration checks still apply.
 ./stack status
 ./stack logs
 ./stack backup
-./stack integration-test IMAGE@sha256:DIGEST
+./stack integration-test
 ./stack deploy
 ./stack update
 ./stack restart-juno
@@ -501,6 +541,5 @@ for credentials, startup, environment labels, and collection limits.
 These additions fit the design but are intentionally deferred from the first
 production bootstrap:
 
-- Prerelease/Sepolia Compose overlay
 - Full database reconstruction from chain origin without a Mongo dump
 - Multi-host MongoDB or Elasticsearch high availability

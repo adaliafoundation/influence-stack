@@ -9,7 +9,7 @@ services:
       NODE_ENV: production
       PORT: "3000"
       REQUIRE_RUNTIME_CONFIG: "true"
-      REACT_APP_CONFIG_ENV: production
+      REACT_APP_CONFIG_ENV: ${STACK_ENVIRONMENT:-production}
       REACT_APP_API_INFLUENCE: https://${API_DOMAIN:?Set API_DOMAIN}
     networks: [edge]
     read_only: true

@@ -8,13 +8,13 @@ x-logging: &default-logging
     labels: "com.docker.compose.service"
 
 x-service-labels: &service-labels
-  com.influenceth.stack.environment: production
+  com.influenceth.stack.environment: ${STACK_ENVIRONMENT:-production}
   com.influenceth.stack.project: ${COMPOSE_PROJECT_NAME:-influence-production}
 
 x-app-environment: &app-environment
-  NODE_ENV: production
+  NODE_ENV: ${STACK_ENVIRONMENT:-production}
   LOG_LEVEL: ${LOG_LEVEL:-info}
-  HEALTH_NAMESPACE: ${HEALTH_NAMESPACE:-production}
+  HEALTH_NAMESPACE: ${HEALTH_NAMESPACE:-${STACK_ENVIRONMENT:-production}}
   HEALTH_TIMEOUT_MS: ${HEALTH_TIMEOUT_MS:-2000}
   WORKER_MAX_AGE_MS: ${WORKER_MAX_AGE_MS:-180000}
   MONGO_URL_FILE: /run/secrets/mongo_url
