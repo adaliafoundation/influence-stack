@@ -436,8 +436,6 @@ validate_configuration() {
     [ -n "${BANXA_PARTNER_REF:-}" ] \
       || { echo "Configuration required: BANXA_PARTNER_REF" >&2; invalid=1; }
     validate_secret_file banxa_api_key || invalid=1
-    validate_secret_file banxa_webhook_api_key || invalid=1
-    validate_secret_file banxa_webhook_secret || invalid=1
   fi
 
   if [ "${NOTIFICATIONS_EMAIL_ENABLED:-0}" = "1" ]; then

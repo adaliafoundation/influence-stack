@@ -44,6 +44,8 @@ jobs:
 
       - name: Test optional IPFS configuration
         run: bash scripts/test-ipfs-config.sh
+      - name: Check Banxa polling configuration
+        run: bash scripts/test-banxa-config.sh
 
       - name: Test snapshot download recovery
         run: bash scripts/test-juno-download.sh

@@ -81,3 +81,52 @@ To stop only collection:
 ```sh
 docker compose -p influence-observability -f compose.observability.yaml stop
 ```
+
+## Verify delivery and troubleshoot
+
+Pipeline edits must be deployed in Mezmo. Inspect a fresh source sample, then find
+the same message in Log Analysis. Use ordinary worker logs or make a request to the
+client/API to generate activity. Do not infer delivery from collector startup alone.
+
+For an OTEL source sample, resource fields are under
+`message.resource.attributes` and the body is `message.record.body`. Mezmo's
+template paths start inside `message`; dots inside attribute names need quoting:
+
+| Destination field | Template / field path |
+| --- | --- |
+| Hostname | `{{ .resource.attributes."host.name" }}` |
+| Line | `{{ .record.body }}` |
+| App | `{{ .resource.attributes."service.name" }}` |
+| Env | `{{ .resource.attributes."deployment.environment.name" }}` |
+| File | `{{ .record.attributes."log.file.path" }}` |
+| Meta Field | `.resource.attributes` (field path, not a template) |
+
+During deployment testing, Log Analysis used resource `service.name` for its app
+label even when the destination's App override was set. This is an observation,
+not a confirmed provider bug or a guarantee about other pipeline configurations.
+The collector now sets that attribute directly. No intermediate processor is
+required by this stack. Remove any temporary diagnostic message prefixes after
+testing. In Log Analysis inspect `_app`, `_host`, and `_line`; resource keys in
+`_meta` may be normalized with underscores.
+
+| Symptom | Check |
+| --- | --- |
+| No fresh destination logs | Pipeline is deployed; logs output connects to the intended destination; collector has no persistent export errors. |
+| `UNKNOWN_APP` | Check `service.name` in a fresh source record and that the updated collector configuration is loaded. `service.namespace` is a different field. |
+| Every app is `influence` | Older containers lack Compose service labels in their log envelopes. Labels appear on normal recreation, not just restart. |
+| Secret `permission denied` | Pull current collector configuration, including its user/capability settings; keep the key mode 0600. Reissuing the key does not fix filesystem permissions. |
+| Core services reported as orphans | Use the explicit `-p influence-observability` commands above. Do not use `--remove-orphans` against the core project. |
+
+Changes to the bind-mounted collector YAML require a collector restart; `up -d`
+alone does not detect edits inside mounted files:
+
+```sh
+docker compose -p influence-observability -f compose.observability.yaml restart otel-collector
+```
+
+For Compose/environment changes, use `up -d` to recreate with the new settings.
+
+Mongo's authenticated healthcheck runs every ten seconds and can generate multiple
+informational connection/authentication records. Worker polling/delay messages and
+Juno `Stored Block` logs are also routine. Diagnose warnings/errors and lack of
+progress separately from log volume. Any noise filtering should preserve failures.
