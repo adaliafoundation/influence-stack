@@ -15,6 +15,7 @@ Run `./stack init`, then edit the following values together in `.env`:
 ```dotenv
 STACK_ENVIRONMENT=prerelease
 JUNO_NETWORK=sepolia
+JUNO_RPC_VERSION=v0_10
 COMPOSE_PROJECT_NAME=influence-prerelease
 DATA_ROOT=/influence-prerelease-data
 HEALTH_NAMESPACE=prerelease
@@ -48,7 +49,9 @@ Install **Ethereum Sepolia** URLs in `alchemy_juno_ethereum_ws_url` (WebSocket) 
 and **Ethereum Sepolia** providers, IPFS, and the appropriate AVNU endpoint. Review
 wallet/OAuth origin allowlists and all enabled integrations. Keep provisioning and
 payments disabled until their test credentials, product IDs, and signer are ready.
-The selected preset and stack API URL override values in `client.env`.
+The selected preset and stack API URL override values in `client.env`. Primary
+and backup Starknet provider URLs, including those used by local development
+clients, must serve RPC v0.10.
 
 The `latest` snapshot is not guaranteed to match the pinned Juno release. Verify
 its version before bootstrap; the installer refuses a mismatch. If necessary,
@@ -118,6 +121,11 @@ they default to `production` and `mainnet`. Image pins, paths, ports, pruning,
 service topology, credentials, and backup settings are unchanged. Explicit
 `HEALTH_NAMESPACE` values retain precedence. `./stack init` adds the new settings
 without replacing existing values.
+
+RPC now defaults to `v0_10` in both environments. Update any explicit older
+`JUNO_RPC_VERSION` in `.env` alongside compatible application images; omitted
+values select v0.10 on the next deployment. See the [Juno configuration](../README.md)
+for the upgrade and live verification requirements.
 
 The changed Compose/scripts invalidate the saved image integration receipt. Before
 the next production deploy, rerun `./stack integration-test`; it uses the configured

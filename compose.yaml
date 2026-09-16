@@ -22,8 +22,8 @@ x-app-environment: &app-environment
   ELASTICSEARCH_URL_FILE: /run/secrets/elasticsearch_url
   ETHEREUM_PROVIDER_FILE: /run/secrets/alchemy_influence_ethereum_http_url
   REDIS_DISABLE_TLS: "1"
-  STARKNET_RPC_PROVIDER: http://juno:6060/${JUNO_RPC_VERSION:-v0_8}
-  STARKNET_EVENT_RETRIEVER_RPC_PROVIDER: http://juno:6060/${JUNO_RPC_VERSION:-v0_8}
+  STARKNET_RPC_PROVIDER: http://juno:6060/${JUNO_RPC_VERSION:-v0_10}
+  STARKNET_EVENT_RETRIEVER_RPC_PROVIDER: http://juno:6060/${JUNO_RPC_VERSION:-v0_10}
 
 x-app-base: &app-base
   image: ${INFLUENCE_SERVER_IMAGE:-ghcr.io/adaliafoundation/influence-server:production}

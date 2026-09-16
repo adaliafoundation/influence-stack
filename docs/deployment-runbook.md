@@ -81,7 +81,7 @@ estimate remaining time using several minutes of progress and a current chain
 head, not a short burst of log lines. With the default RPC settings:
 
 ```sh
-curl -fsS http://127.0.0.1:6060/v0_8 \
+curl -fsS http://127.0.0.1:6060/v0_10 \
   -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"starknet_syncing","params":[]}'
 ```

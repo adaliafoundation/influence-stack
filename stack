@@ -533,7 +533,7 @@ juno_rpc() {
   curl -fsS \
     -H 'content-type: application/json' \
     --data "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"${method}\",\"params\":[]}" \
-    "http://127.0.0.1:${JUNO_HOST_PORT:-6060}/${JUNO_RPC_VERSION:-v0_8}"
+    "http://127.0.0.1:${JUNO_HOST_PORT:-6060}/${JUNO_RPC_VERSION:-v0_10}"
 }
 
 juno_block() {
@@ -545,7 +545,7 @@ juno_has_block() {
   curl -fsS \
     -H 'content-type: application/json' \
     --data "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"starknet_getBlockWithTxHashes\",\"params\":[{\"block_number\":${block}}]}" \
-    "http://127.0.0.1:${JUNO_HOST_PORT:-6060}/${JUNO_RPC_VERSION:-v0_8}" \
+    "http://127.0.0.1:${JUNO_HOST_PORT:-6060}/${JUNO_RPC_VERSION:-v0_10}" \
     | jq -e --argjson block "$block" '.result.block_number == $block' >/dev/null
 }
 
