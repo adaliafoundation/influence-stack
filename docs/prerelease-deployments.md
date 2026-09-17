@@ -29,10 +29,13 @@ then reread `.env`, so overlapping server/client releases are serialized.
 For a changed image pair, the updater:
 
 1. Tests candidate pins using a temporary environment file and integration receipt.
-2. Takes an encrypted off-host backup with the current deployment configuration.
-3. Saves the previous `.env` in `.state/prerelease-previous.env` and installs the
+2. Saves the previous `.env` in `.state/prerelease-previous.env` and installs the
    tested pins and receipt.
-4. Recreates only application services and waits for their health checks.
+3. Recreates only application services and waits for their health checks.
+
+Automatic updates do not dump MongoDB, upload a backup, or pause writers for a
+backup. Daily scheduled backups and manual `./stack backup` remain available.
+Take a manual backup before a server change that needs a fresh recovery point.
 
 Juno, MongoDB, Redis, Elasticsearch, and Caddy are not upgraded by this command.
 The stack checkout is not automatically pulled. Application releases must remain
@@ -42,7 +45,8 @@ operator action.
 ## Set up a new installation
 
 Complete the [prerelease setup](prerelease.md), client configuration, image
-integration test, bootstrap, and [off-host backups](off-host-backups.md) first.
+integration test, and bootstrap first. Configure [daily off-host backups](off-host-backups.md)
+separately; automatic updates do not require backup credentials.
 Use the `influence` operator account and `/home/influence/influence-stack` checkout
 for the supplied systemd unit. Docker Buildx is needed to resolve registry digests.
 
@@ -103,7 +107,7 @@ In **each** application repository, configure:
 
 A blank URL disables notification; releases can still publish normally. Set the
 URL only after the receiver and routing are ready. Test `./stack prerelease-update`
-manually once; it must pass the same integration, backup, and health gates.
+manually once; it must pass the same integration and health gates.
 
 ## Operations and failures
 
@@ -116,7 +120,7 @@ journalctl -u influence-prerelease-webhook.service --since today
 ./stack status
 ```
 
-Integration or backup failure leaves the live `.env` and containers unchanged.
+Integration failure leaves the live `.env` and containers unchanged.
 Once deployment begins, failure leaves the candidate pins in place and may leave
 a mix of application container versions. All update attempts stop while
 `.state/prerelease-update-failed` exists. Inspect the journal and service state,
@@ -124,8 +128,8 @@ correct the failure, and use `./stack integration-test` and `./stack deploy` to
 complete recovery. Remove the failure marker only after reviewing the state.
 
 There is no automatic image rollback: a server release may already have changed
-Mongo data. The saved previous `.env` and off-host backup support a deliberate
-rollback plan. Neither queued HTTP acceptance nor a successful workflow is a
+Mongo data. The saved previous `.env` preserves the prior image pins, but does not
+restore database state. Database recovery uses your latest independently taken backup. Neither queued HTTP acceptance nor a successful workflow is a
 substitute for monitoring application health and deployment failures.
 
 Before manually editing or updating the checkout/configuration, disable workflow
