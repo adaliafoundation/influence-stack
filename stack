@@ -934,9 +934,10 @@ validate_notifications() {
     *) die "NOTIFICATIONS_EMAIL_ENABLED must be 0 or 1" ;;
   esac
   [ "${NOTIFICATIONS_EMAIL_ENABLED:-0}" = 1 ] || return 0
-  [[ "${NOTIFICATIONS_INTERVAL_SECONDS:-60}" =~ ^[1-9][0-9]{0,6}$ ]] \
-    && [ "${NOTIFICATIONS_INTERVAL_SECONDS:-60}" -le 2147483 ] \
-    || die "NOTIFICATIONS_INTERVAL_SECONDS must be between 1 and 2147483"
+  if [[ ! "${NOTIFICATIONS_INTERVAL_SECONDS:-60}" =~ ^[1-9][0-9]{0,6}$ ]] \
+    || [ "${NOTIFICATIONS_INTERVAL_SECONDS:-60}" -gt 2147483 ]; then
+    die "NOTIFICATIONS_INTERVAL_SECONDS must be between 1 and 2147483"
+  fi
   [ -n "${NOTIFICATIONS_EMAIL_FROM_EMAIL:-}" ] \
     || die "Set NOTIFICATIONS_EMAIL_FROM_EMAIL before enabling notifications"
   [[ "${SENDGRID_TEMPLATE_NOTIFICATION:-}" == d-* ]] \
@@ -1438,8 +1439,9 @@ backup_stack() (
   local extra_paths_file="$STACK_ROOT/backup-paths.txt"
   local extra_path
   if [ -e "$extra_paths_file" ]; then
-    [ -f "$extra_paths_file" ] && [ -r "$extra_paths_file" ] \
-      || die "Cannot read backup-paths.txt"
+    if [ ! -f "$extra_paths_file" ] || [ ! -r "$extra_paths_file" ]; then
+      die "Cannot read backup-paths.txt"
+    fi
     backup_paths+=("$extra_paths_file")
     while IFS= read -r extra_path || [ -n "$extra_path" ]; do
       extra_path="${extra_path%$'\r'}"
@@ -1448,8 +1450,9 @@ backup_stack() (
         /*) ;;
         *) die "backup-paths.txt requires absolute paths" ;;
       esac
-      [ -e "$extra_path" ] && [ -r "$extra_path" ] \
-        || die "Extra backup path is missing or unreadable: $extra_path"
+      if [ ! -e "$extra_path" ] || [ ! -r "$extra_path" ]; then
+        die "Extra backup path is missing or unreadable: $extra_path"
+      fi
       backup_paths+=("$extra_path")
     done < "$extra_paths_file"
   fi

@@ -12,7 +12,7 @@ cp "$REPO_ROOT/.env.example" "$ENV_FILE"
 mkdir "$TEST_ROOT/secrets"
 load_env
 compose_files
-compose config --format json > "$TEST_ROOT/render.json"
+docker compose "${COMPOSE_ARGS[@]}" config --format json > "$TEST_ROOT/render.json"
 jq -e '.services | has("influence-notifications") | not' "$TEST_ROOT/render.json" >/dev/null
 validate_notifications
 NOTIFICATIONS_EMAIL_ENABLED=1
@@ -34,7 +34,7 @@ done
 export NOTIFICATIONS_EMAIL_ENABLED NOTIFICATIONS_EMAIL_FROM_EMAIL SENDGRID_TEMPLATE_NOTIFICATION
 prepare_optional_secret_paths
 compose_files
-compose config --format json > "$TEST_ROOT/render.json"
+docker compose "${COMPOSE_ARGS[@]}" config --format json > "$TEST_ROOT/render.json"
 jq -e '.services["influence-notifications"] |
   .environment.NOTIFICATIONS_EMAIL_ENABLED == "1" and
   .environment.SENDGRID_API_KEY_FILE == "/run/secrets/sendgrid_api_key" and
