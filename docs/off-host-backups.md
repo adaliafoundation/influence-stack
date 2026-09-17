@@ -133,6 +133,26 @@ files through SFTP. Preview the default policy without deleting anything:
 Substitute your configured host, tag, and retention counts if different. Size the
 repository from actual snapshot growth, with room for a new upload before pruning.
 
+## Include external service configuration
+
+Create an optional `backup-paths.txt` in the stack checkout to include files or
+folders managed outside this repository. Use one literal absolute path per line;
+blank lines and lines beginning with `#` are ignored. Spaces are supported, but
+shell variables and globs are not expanded. List actual paths: Restic archives
+symbolic links rather than following them. Keep this local file out of Git.
+
+The list and its entries are included in the same encrypted snapshot and retention
+policy as Mongo and stack configuration. Missing or unreadable entries fail the
+backup before application writers are paused. File permissions are not changed;
+the backup operator must already have read access.
+
+Use this for external reverse-proxy and other service configuration. Do not list
+live database directories: only the stack's Mongo archive is made consistent by
+this command. External service data needs its own consistency/backup procedure.
+Caddy certificate volumes and the IPFS repository are not automatically included.
+Manual and scheduled `./stack backup` both honor this file; automatic prerelease
+updates still do not run a backup.
+
 ## Enable the daily schedule
 
 First, after MongoDB has been restored and the stack is operational, run:

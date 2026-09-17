@@ -70,7 +70,8 @@ grep -q "^INFLUENCE_SERVER_IMAGE=ghcr.io/adaliafoundation/influence-server@$serv
 grep -q "^INFLUENCE_CLIENT_IMAGE=ghcr.io/adaliafoundation/influence-client@$client_digest$" "$ENV_FILE"
 grep -q "^INFLUENCE_SERVER_IMAGE=$original$" "$STATE_DIR/prerelease-previous.env"
 [ "$(head -n 1 "$TEST_ROOT/actions")" = integration ]
-[ "$(tail -n 1 "$TEST_ROOT/actions")" = health ]
+[ "$(tail -n 1 "$TEST_ROOT/actions")" = 'compose --profile notifications stop influence-notifications' ]
+grep -q '^health$' "$TEST_ROOT/actions"
 grep -q '^compose .*up -d --no-deps influence-server' "$TEST_ROOT/actions"
 if grep '^compose ' "$TEST_ROOT/actions" | grep -Eq ' (juno|mongo|redis|elasticsearch|caddy)( |$)'; then exit 1; fi
 : > "$TEST_ROOT/actions"

@@ -384,6 +384,31 @@ services:
       <<: *service-labels
       com.influenceth.stack.component: agreement-auditor
 
+  influence-notifications:
+    <<: *app-base
+    profiles: [notifications]
+    command: ["node", "/opt/influence-stack/run-periodic.js", "${NOTIFICATIONS_INTERVAL_SECONDS:-60}", "src/workers/notifications.js"]
+    environment:
+      <<: *app-environment
+      CLIENT_URL: ${CLIENT_URL:?Set CLIENT_URL}
+      IMAGES_SERVER_URL: ${IMAGES_SERVER_URL:?Set IMAGES_SERVER_URL}
+      SENDGRID_API_KEY_FILE:
+      SENDGRID_TEMPLATE_NOTIFICATION: ${SENDGRID_TEMPLATE_NOTIFICATION:-}
+      NOTIFICATIONS_EMAIL_ENABLED: ${NOTIFICATIONS_EMAIL_ENABLED:-0}
+      NOTIFICATIONS_EMAIL_FROM_EMAIL: ${NOTIFICATIONS_EMAIL_FROM_EMAIL:-}
+      NOTIFICATIONS_EMAIL_FROM_NAME: ${NOTIFICATIONS_EMAIL_FROM_NAME:-Influence Notifications}
+    secrets:
+      - mongo_url
+      - redis_url
+      - elasticsearch_url
+      - alchemy_influence_ethereum_http_url
+      - sendgrid_api_key
+    volumes:
+      - ./scripts/run-periodic.js:/opt/influence-stack/run-periodic.js:ro
+    labels:
+      <<: *service-labels
+      com.influenceth.stack.component: notifications
+
   influence-tools:
     <<: *app-base
     restart: "no"
