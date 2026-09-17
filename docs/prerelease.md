@@ -110,7 +110,8 @@ the prerelease localhost exception from this stack change.
 
 Use [Automatic prerelease deployment](prerelease-deployments.md) to deploy verified
 server/client releases through authenticated GitHub workflow notifications. The
-feature is opt-in and requires a completed bootstrap and off-host backups. An
+feature is opt-in and requires a completed bootstrap. Backups run separately
+on their daily schedule or through `./stack backup`. An
 [external reverse proxy](external-proxy.md) can replace the default managed Caddy
 on either a fresh host or an existing installation.
 

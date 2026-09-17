@@ -44,10 +44,10 @@ integration_test() {
   record_integration_test "$INFLUENCE_SERVER_IMAGE" "$(deployment_fingerprint)"
 }
 backup_stack() {
-  grep -q "^INFLUENCE_SERVER_IMAGE=$original$" "$ENV_FILE"
-  echo backup >> "$TEST_ROOT/actions"
-  [ "${FAIL_STAGE:-}" != backup ]
+  echo 'Automatic prerelease updates must not run a backup' >&2
+  return 1
 }
+
 compose() {
   echo "compose $*" >> "$TEST_ROOT/actions"
   [ "${FAIL_STAGE:-}" != deploy ]
@@ -69,7 +69,8 @@ prerelease_update
 grep -q "^INFLUENCE_SERVER_IMAGE=ghcr.io/adaliafoundation/influence-server@$server_digest$" "$ENV_FILE"
 grep -q "^INFLUENCE_CLIENT_IMAGE=ghcr.io/adaliafoundation/influence-client@$client_digest$" "$ENV_FILE"
 grep -q "^INFLUENCE_SERVER_IMAGE=$original$" "$STATE_DIR/prerelease-previous.env"
-[ "$(head -n 2 "$TEST_ROOT/actions")" = "$(printf 'integration\nbackup')" ]
+[ "$(head -n 1 "$TEST_ROOT/actions")" = integration ]
+[ "$(tail -n 1 "$TEST_ROOT/actions")" = health ]
 grep -q '^compose .*up -d --no-deps influence-server' "$TEST_ROOT/actions"
 if grep '^compose ' "$TEST_ROOT/actions" | grep -Eq ' (juno|mongo|redis|elasticsearch|caddy)( |$)'; then exit 1; fi
 : > "$TEST_ROOT/actions"
@@ -86,11 +87,11 @@ prerelease_update
 [ ! -s "$TEST_ROOT/actions" ]
 flock() { :; }
 
-for stage in integration backup deploy health; do
+for stage in integration deploy health; do
   reset_fixture
   FAIL_STAGE="$stage" expect_failure
   [ -s "$STATE_DIR/prerelease-update-failed" ]
-  if [[ "$stage" = integration || "$stage" = backup ]]; then
+  if [ "$stage" = integration ]; then
     grep -q "^INFLUENCE_SERVER_IMAGE=$original$" "$ENV_FILE"
     [ ! -e "$INTEGRATION_RECEIPT" ]
   fi

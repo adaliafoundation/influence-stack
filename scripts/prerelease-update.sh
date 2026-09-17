@@ -43,7 +43,7 @@ resolve_release_channel() {
   printf '%s@%s\n' "${channel%:*}" "$digest"
 }
 
-# Candidate configuration stays in subshells so backup still uses the live pins.
+# Test candidate configuration before replacing the live pins.
 # shellcheck disable=SC2030,SC2031
 prerelease_update() (
   set -Eeuo pipefail
@@ -94,7 +94,6 @@ prerelease_update() (
     INTEGRATION_RECEIPT="$candidate_dir/receipt"
     integration_test
   )
-  backup_stack
 
   cp "$ENV_FILE" "$STATE_DIR/prerelease-previous.env"
   chmod 600 "$STATE_DIR/prerelease-previous.env"
