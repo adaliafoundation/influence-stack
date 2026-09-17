@@ -1003,6 +1003,11 @@ const config = require('config');
   if (!expectedChain || config.get('Starknet.chainSlug') !== expectedChain) {
     throw new Error('Server image Starknet configuration does not match the selected environment');
   }
+  const requiredWorkers = config.get('Health.requiredWorkers');
+  const expectedWorkers = ['ethereum-retriever', 'starknet-retriever', 'event-processor', 'elastic-indexer'];
+  if (!Array.isArray(requiredWorkers) || expectedWorkers.some((role) => !requiredWorkers.includes(role))) {
+    throw new Error('Server image must enable Health.requiredWorkers for every deployed worker');
+  }
   await mongoose.connection.asPromise();
   await mongoose.connection.db.admin().ping();
   await redis.set('influence-stack-smoke', 'ok', 10_000);
