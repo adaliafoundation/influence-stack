@@ -6,3 +6,4 @@ secrets/*
 *.archive
 *.tar
 *.tar.gz
+backup-paths.txt

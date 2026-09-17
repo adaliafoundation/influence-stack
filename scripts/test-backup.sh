@@ -19,10 +19,10 @@ require_command() { :; }
 flock() { return "${LOCK_FAILURE:-0}"; }
 compose() {
   case "$*" in
-    'ps -q influence-server') echo running ;;
+    'ps -q influence-server'|'ps -q influence-notifications') echo running ;;
     ps*) ;;
-    *' unpause '*) echo unpause >> "$TEST_ROOT/events" ;;
-    *' pause '*) echo pause >> "$TEST_ROOT/events" ;;
+    *' unpause '*) [[ "$*" == *influence-notifications* ]]; echo unpause >> "$TEST_ROOT/events" ;;
+    *' pause '*) [[ "$*" == *influence-notifications* ]]; echo pause >> "$TEST_ROOT/events" ;;
     *' run '*)
       # Match the literal variable expanded later inside mongo-tools.
       # shellcheck disable=SC2016
@@ -44,6 +44,7 @@ restic() {
     echo preflight >> "$TEST_ROOT/events"
     return "${REMOTE_FAILURE:-0}"
   elif [[ "$args" == *' backup '* ]]; then
+    printf '%s\n' "$@" > "$TEST_ROOT/restic-args"
     echo upload >> "$TEST_ROOT/events"
     [ "$(tail -n 2 "$TEST_ROOT/events" | head -n 1)" = unpause ]
     [[ "$args" == *" --exclude $TEST_ROOT/secrets/restic_password "* ]]
@@ -87,4 +88,18 @@ RETENTION_FAILURE=1 run_failure
 : > "$TEST_ROOT/events"
 LOCK_FAILURE=1 run_failure
 [ ! -s "$TEST_ROOT/events" ]
+# Preserve spaces and include the operator's list in the snapshot.
+mkdir -p "$TEST_ROOT/external config"
+printf 'config\n' > "$TEST_ROOT/external config/Caddyfile"
+printf '# External configuration\n\n%s\n' "$TEST_ROOT/external config/Caddyfile" > "$STACK_ROOT/backup-paths.txt"
+: > "$TEST_ROOT/events"
+backup_stack
+grep -Fxq "$TEST_ROOT/external config/Caddyfile" "$TEST_ROOT/restic-args"
+grep -Fxq "$STACK_ROOT/backup-paths.txt" "$TEST_ROOT/restic-args"
+for invalid in "$TEST_ROOT/missing" 'relative/path'; do
+  printf '%s\n' "$invalid" > "$STACK_ROOT/backup-paths.txt"
+  : > "$TEST_ROOT/events"
+  run_failure
+  [ "$(cat "$TEST_ROOT/events")" = preflight ]
+done
 printf 'Backup success and failure checks passed\n'

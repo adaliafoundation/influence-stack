@@ -110,6 +110,7 @@ prerelease_update() (
   if [ "${ENABLE_CLIENT:-0}" = 1 ]; then services+=(influence-client); fi
   compose --profile indexer --profile auditor up -d --no-deps "${services[@]}"
   wait_for_required_application_health
+  sync_notifications
   rm "$STATE_DIR/prerelease-update-failed"
   info "Prerelease application images deployed successfully"
 )

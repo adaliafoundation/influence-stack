@@ -37,6 +37,7 @@ Commands:
   configure-webhook     Generate the authenticated prerelease webhook configuration
   restart-juno          Gracefully restart Juno and gate the Starknet retriever
   upgrade-juno          Safely apply a changed immutable Juno image pin
+  notification-queue    Inspect notification counts without sending or deleting
   status                Show service and convergence status
   logs [service]        Follow all logs or one Compose service
   backup                Upload an encrypted MongoDB and configuration backup
@@ -108,6 +109,9 @@ compose_files() {
   export HOST_UID="${HOST_UID:-$(id -u)}"
   export HOST_GID="${HOST_GID:-$(id -g)}"
   COMPOSE_ARGS=(--env-file "$ENV_FILE" -f "${STACK_ROOT}/compose.yaml")
+  if [ "${NOTIFICATIONS_EMAIL_ENABLED:-0}" = "1" ]; then
+    COMPOSE_ARGS+=(--profile notifications)
+  fi
   if [ "${ENABLE_CLIENT:-0}" = "1" ]; then
     COMPOSE_ARGS+=(-f "${STACK_ROOT}/compose.client.yaml")
   fi
@@ -248,7 +252,7 @@ validate_image_pin() {
 
 validate_application_images() {
   local rendered
-  rendered="$(compose --profile indexer --profile auditor --profile tools config --format json)"
+  rendered="$(compose --profile indexer --profile auditor --profile notifications --profile tools config --format json)"
   jq -e --arg image "$INFLUENCE_SERVER_IMAGE" '
     [
       .services["influence-server"],
@@ -258,6 +262,7 @@ validate_application_images() {
       .services["influence-event-processor"],
       .services["influence-event-auditor"],
       .services["influence-agreement-auditor"],
+      .services["influence-notifications"],
       .services["influence-tools"]
     ] | all(.image == $image)
   ' <<<"$rendered" >/dev/null \
@@ -284,11 +289,12 @@ deployment_fingerprint() {
     scripts/mongo-init-app-user.sh
     scripts/mongo-entrypoint.sh
     scripts/elasticsearch-entrypoint.sh
+    scripts/run-periodic.js
     scripts/check-client-image.js
     scripts/prerelease-update.sh
   )
   {
-    compose --profile indexer --profile auditor --profile tools config --format json
+    compose --profile indexer --profile auditor --profile notifications --profile tools config --format json
     for file in "${files[@]}"; do
       printf '\0%s\0' "$file"
       command cat "${STACK_ROOT}/${file}"
@@ -432,6 +438,8 @@ validate_configuration() {
     echo "alchemy_influence_ethereum_http_url must contain an https:// URL" >&2
     invalid=1
   fi
+
+  validate_notifications
 
   if { [ "${STARTER_PACK_PROVISIONER_ENABLED:-0}" = "1" ] \
     || [ "${CREWMATE_PROVISIONER_ENABLED:-0}" = "1" ]; } \
@@ -920,6 +928,36 @@ install_signer_key() {
   info "Installed signer key at $destination"
 }
 
+validate_notifications() {
+  case "${NOTIFICATIONS_EMAIL_ENABLED:-0}" in
+    0|1) ;;
+    *) die "NOTIFICATIONS_EMAIL_ENABLED must be 0 or 1" ;;
+  esac
+  [ "${NOTIFICATIONS_EMAIL_ENABLED:-0}" = 1 ] || return 0
+  [[ "${NOTIFICATIONS_INTERVAL_SECONDS:-60}" =~ ^[1-9][0-9]{0,6}$ ]] \
+    && [ "${NOTIFICATIONS_INTERVAL_SECONDS:-60}" -le 2147483 ] \
+    || die "NOTIFICATIONS_INTERVAL_SECONDS must be between 1 and 2147483"
+  [ -n "${NOTIFICATIONS_EMAIL_FROM_EMAIL:-}" ] \
+    || die "Set NOTIFICATIONS_EMAIL_FROM_EMAIL before enabling notifications"
+  [[ "${SENDGRID_TEMPLATE_NOTIFICATION:-}" == d-* ]] \
+    || die "Set a SendGrid dynamic template ID before enabling notifications"
+  validate_secret_file sendgrid_api_key || die "Install the SendGrid API key before enabling notifications"
+}
+
+sync_notifications() {
+  if [ "${NOTIFICATIONS_EMAIL_ENABLED:-0}" = 1 ]; then
+    compose --profile notifications up -d --no-deps influence-notifications
+  else
+    compose --profile notifications stop influence-notifications
+  fi
+}
+
+notification_queue() {
+  load_env
+  compose_files
+  compose --profile tools run --rm --no-deps -T influence-tools bin/notification-queue.js
+}
+
 config_stack() {
   require_command jq
   require_command openssl
@@ -1193,6 +1231,7 @@ bootstrap_stack() {
   compose --profile indexer --profile auditor up -d "${edge_services[@]}"
   wait_for_health influence-server 300
   date -u +%Y-%m-%dT%H:%M:%SZ > "${STATE_DIR}/bootstrap-complete"
+  sync_notifications
   info "${STACK_ENVIRONMENT:-production} stack bootstrap complete"
 }
 
@@ -1244,6 +1283,7 @@ deploy_stack() {
   ensure_juno_image_applied
   compose --profile indexer --profile auditor up -d
   wait_for_required_application_health
+  sync_notifications
 }
 
 update_stack() {
@@ -1260,6 +1300,7 @@ update_stack() {
   compose --profile indexer --profile auditor pull
   compose --profile indexer --profile auditor up -d
   wait_for_required_application_health
+  sync_notifications
 }
 
 juno_container_image() {
@@ -1393,6 +1434,25 @@ backup_stack() (
     fi
     backup_paths+=("$signer")
   fi
+  # Optional operator-owned paths, one literal absolute path per line.
+  local extra_paths_file="$STACK_ROOT/backup-paths.txt"
+  local extra_path
+  if [ -e "$extra_paths_file" ]; then
+    [ -f "$extra_paths_file" ] && [ -r "$extra_paths_file" ] \
+      || die "Cannot read backup-paths.txt"
+    backup_paths+=("$extra_paths_file")
+    while IFS= read -r extra_path || [ -n "$extra_path" ]; do
+      extra_path="${extra_path%$'\r'}"
+      case "$extra_path" in
+        ''|'#'*) continue ;;
+        /*) ;;
+        *) die "backup-paths.txt requires absolute paths" ;;
+      esac
+      [ -e "$extra_path" ] && [ -r "$extra_path" ] \
+        || die "Extra backup path is missing or unreadable: $extra_path"
+      backup_paths+=("$extra_path")
+    done < "$extra_paths_file"
+  fi
   local writers=(
     influence-server
     influence-indexer
@@ -1401,6 +1461,7 @@ backup_stack() (
     influence-event-processor
     influence-event-auditor
     influence-agreement-auditor
+    influence-notifications
   )
   local active_writers=()
   local writers_paused=0
@@ -1468,6 +1529,7 @@ main() {
     configure-webhook) configure_prerelease_webhook "$@" ;;
     restart-juno) restart_juno "$@" ;;
     upgrade-juno) upgrade_juno "$@" ;;
+    notification-queue) notification_queue "$@" ;;
     status) status_stack "$@" ;;
     logs) logs_stack "$@" ;;
     backup) backup_stack "$@" ;;

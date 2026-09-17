@@ -77,3 +77,60 @@ Assign an operator and a tested delivery destination for API outages, stalled
 workers, backup failures/stale snapshots, disk pressure, and persistent log export
 failures. The backup timer records failures in the journal but does not send alerts.
 A running collector alone does not prove delivery to the log destination.
+
+## Email notification worker
+
+Email delivery is disabled by default. After verifying the sender, API key, and
+active SendGrid dynamic template with a test email, inspect the pending queue:
+
+```bash
+./stack notification-queue
+```
+
+The stack invokes `node bin/notification-queue.js` from the configured server image.
+Publish and select a server image containing that command before using it; older
+images do not include it. Queue selection and inspection are owned by the server.
+
+This command reads counts and the oldest eligible timestamp without sending,
+removing, or displaying notification contents or recipient addresses. Eligible
+counts are documents due within the last 30 days, not a count of emails: the
+server groups notifications and filters them using recipient preferences and
+notification-specific conditions. Older documents are ignored by the worker.
+
+Before enabling delivery, stop notification jobs on the previous deployment to
+avoid duplicate sends. Review the backlog: enabling the service immediately
+processes eligible notifications, including older ones within that 30-day window.
+
+Set the following in `.env`:
+
+```dotenv
+NOTIFICATIONS_EMAIL_ENABLED=1
+NOTIFICATIONS_INTERVAL_SECONDS=60
+NOTIFICATIONS_EMAIL_FROM_EMAIL=your-verified-sender@example.com
+NOTIFICATIONS_EMAIL_FROM_NAME=Influence Notifications
+SENDGRID_TEMPLATE_NOTIFICATION=d-your-active-template-id
+```
+
+Install `sendgrid_api_key` with `./stack install-secret sendgrid_api_key`. Then run
+`./stack integration-test` and `./stack deploy`. This starts one
+`influence-notifications` service using the pinned server image and existing
+periodic runner. Runs do not overlap within that container; each finishes before
+the configured delay starts. Do not scale this service to multiple replicas.
+Follow its output with `./stack logs influence-notifications`.
+
+Manual deployments and prerelease updates apply the notification setting. Setting
+it back to `0` and deploying stops an existing notification service. For an
+immediate stop before deploying, run from the checkout:
+
+```bash
+(
+  source ./stack
+  load_env
+  compose_files
+  compose --profile notifications stop influence-notifications
+)
+```
+
+Backups pause the notification worker with the other database writers. Its
+process status is not proof of email delivery: the existing server worker can
+log an error and exit successfully. Check its logs and SendGrid delivery activity.

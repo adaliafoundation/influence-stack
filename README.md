@@ -67,9 +67,17 @@ its own network, image, database, and endpoint configuration.
 - Ethereum and Starknet event retrievers
 - Event processor and Elasticsearch indexer
 - Event and agreement auditors
+- Optional email notification worker (disabled by default)
 - MongoDB 7, Redis 7.2, and Elasticsearch 8.19
 - Juno, seeded from a compatible snapshot for the selected network
 - Caddy for automatic HTTPS and WebSocket proxying
+
+Email notifications use the existing server notification worker, enabled with
+`NOTIFICATIONS_EMAIL_ENABLED=1`. Inspect the backlog with `./stack notification-queue`
+before enabling it; see [email notification setup](docs/optional-integrations.md#email-notification-worker).
+Existing deployments that already set this flag to `1` will start sending queued
+notifications on their next deployment after this upgrade. Set it to `0` first if
+another deployment still sends email or the backlog has not been reviewed.
 
 The event and agreement auditors run once when their containers start, then wait
 one hour after each run completes before running again. Configure the delays with
