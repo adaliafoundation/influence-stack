@@ -283,6 +283,7 @@ deployment_fingerprint() {
     scripts/backup.sh
     scripts/mongo-init-app-user.sh
     scripts/mongo-entrypoint.sh
+    scripts/elasticsearch-entrypoint.sh
     scripts/check-client-image.js
     scripts/prerelease-update.sh
   )
@@ -754,7 +755,7 @@ reset_elasticsearch() {
   # The quoted script expands inside Elasticsearch, not in this operator shell.
   # shellcheck disable=SC2016
   indices="$(compose exec -T elasticsearch sh -ec '
-    password="$(tr -d "\r\n" < /run/secrets/elasticsearch_password)"
+    password="$(tr -d "\r\n" < /run/elasticsearch-secrets/elasticsearch_password)"
     curl -fsS -u "elastic:${password}" "http://localhost:9200/_cat/indices?h=index"
   ')"
 
@@ -767,7 +768,7 @@ reset_elasticsearch() {
     # The quoted script expands inside Elasticsearch, including the index argument.
     # shellcheck disable=SC2016
     compose exec -T elasticsearch sh -ec '
-      password="$(tr -d "\r\n" < /run/secrets/elasticsearch_password)"
+      password="$(tr -d "\r\n" < /run/elasticsearch-secrets/elasticsearch_password)"
       curl -fsS -u "elastic:${password}" -X DELETE "http://localhost:9200/$1"
     ' sh "$index" >/dev/null
   done <<<"$indices"
@@ -1216,7 +1217,7 @@ prepare_search_indices() {
   # The quoted script expands inside Elasticsearch, not in this operator shell.
   # shellcheck disable=SC2016
   compose exec -T elasticsearch sh -ec '
-    password="$(tr -d "\r\n" < /run/secrets/elasticsearch_password)"
+    password="$(tr -d "\r\n" < /run/elasticsearch-secrets/elasticsearch_password)"
     curl -fsS -u "elastic:${password}" -X PUT \
       -H "content-type: application/json" \
       --data "{\"index\":{\"number_of_replicas\":0}}" \

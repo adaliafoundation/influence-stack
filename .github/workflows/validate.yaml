@@ -33,6 +33,9 @@ jobs:
           sh -n scripts/mongo-init-app-user.sh
           sh -n scripts/mongo-entrypoint.sh
 
+      - name: Test Elasticsearch secret permissions on Linux
+        run: bash scripts/test-elasticsearch-secrets.sh
+
       - name: Test Mongo secret permissions on Linux
         run: bash scripts/test-mongo-secrets.sh
 

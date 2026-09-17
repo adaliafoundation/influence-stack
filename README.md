@@ -551,3 +551,14 @@ production bootstrap:
 
 - Full database reconstruction from chain origin without a Mongo dump
 - Multi-host MongoDB or Elasticsearch high availability
+
+### Elasticsearch secret ownership
+
+Elasticsearch stages its password in a private tmpfs directory before starting
+as UID 1000. The short initialization step runs as root to read an owner-only
+Compose secret regardless of the operator's UID; the source stays unchanged.
+Health checks and indexing setup use the staged copy. This applies to production,
+prerelease, and isolated integration tests. Updating this configuration requires
+an integration test and recreating Elasticsearch on the next deployment; the
+image, data ownership, and database password are unchanged. It does not reset
+an existing database's credentials.
