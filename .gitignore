@@ -7,3 +7,5 @@ secrets/*
 *.tar
 *.tar.gz
 backup-paths.txt
+
+/tmp/
