@@ -3,6 +3,19 @@
 	admin off
 }
 
+(access_log) {
+	log {
+		output stdout
+		format filter {
+			wrap json
+			request>headers delete
+			request>tls delete
+			request>remote_port delete
+			resp_headers delete
+		}
+	}
+}
+
 import /etc/caddy/client/*.caddy
 
 {$API_DOMAIN} {
@@ -17,8 +30,5 @@ import /etc/caddy/client/*.caddy
 		Referrer-Policy "strict-origin-when-cross-origin"
 	}
 
-	log {
-		output stdout
-		format json
-	}
+	import access_log
 }
