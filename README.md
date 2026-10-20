@@ -263,6 +263,14 @@ Normal configuration and image integration checks still apply.
 
 ## Operations
 
+To serve images on a separate hostname with the managed Caddy proxy, set
+`IMAGES_DOMAIN=images.influenceth.io` and
+`IMAGES_SERVER_URL=https://images.influenceth.io` in `.env`, and point that hostname's
+DNS to the stack server. The image hostname shares the API's reverse proxy,
+security headers, and filtered JSON access logging. Leave `IMAGES_DOMAIN` empty
+to keep serving images through `API_DOMAIN`. With an external proxy, configure
+the image hostname on that proxy instead.
+
 ```sh
 ./stack status
 ./stack logs
