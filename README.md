@@ -533,7 +533,10 @@ Install `banxa_api_key`, set `BANXA_PARTNER_REF`, and enable
 ## Logging
 
 Application, database, Juno, and Caddy logs are emitted to stdout and stderr.
-Caddy and Juno emit JSON. Docker retains five 25 MB files per container locally.
+Caddy and Juno emit JSON. Caddy access logs retain request method, URI, host,
+client IP, status, duration, and byte counts, but omit request/response headers,
+TLS details, and the remote port. The API and client share this compact format.
+Docker retains five 25 MB files per container locally.
 
 An optional OpenTelemetry Collector forwards Docker logs to Mezmo over OTLP/HTTP.
 It runs independently of the application stack; see [OpenTelemetry logging](docs/opentelemetry.md)
