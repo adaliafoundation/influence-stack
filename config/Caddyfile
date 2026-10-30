@@ -21,7 +21,24 @@ import /etc/caddy/client/*.caddy
 {$API_DOMAIN} {$IMAGES_DOMAIN} {
 	encode zstd gzip
 	import /etc/caddy/api/*.caddy
-	reverse_proxy influence-server:3001
+	handle /maintenance {
+		header Content-Type application/json
+		header Cache-Control "no-store"
+		header Access-Control-Allow-Origin "*"
+		root * /srv/maintenance
+		@active file /status.json
+		handle @active {
+			rewrite * /status.json
+			file_server
+		}
+		handle {
+			respond `{"active":false}` 200
+		}
+	}
+
+	handle {
+		reverse_proxy influence-server:3001
+	}
 
 	header {
 		Strict-Transport-Security "max-age=31536000; includeSubDomains"

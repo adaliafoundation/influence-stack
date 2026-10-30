@@ -21,7 +21,7 @@ compose() {
   case "$*" in
     'ps -q influence-server'|'ps -q influence-notifications') echo running ;;
     ps*) ;;
-    *' unpause '*) [[ "$*" == *influence-notifications* ]]; echo unpause >> "$TEST_ROOT/events" ;;
+    *' unpause '*) [[ "$*" == *influence-notifications* ]]; echo unpause >> "$TEST_ROOT/events"; return "${UNPAUSE_FAILURE:-0}" ;;
     *' pause '*) [[ "$*" == *influence-notifications* ]]; echo pause >> "$TEST_ROOT/events" ;;
     *' run '*)
       # Match the literal variable expanded later inside mongo-tools.
@@ -31,6 +31,7 @@ compose() {
         echo 'Dump must select the application database independently of admin authentication' >&2
         return 1
       fi
+      grep -q '"active":true,"reason":"backup","startedAt":' "$DATA_ROOT/maintenance/status.json"
       echo dump >> "$TEST_ROOT/events"
       printf 'test database\n' > "$output"
       return "${DUMP_FAILURE:-0}"
@@ -45,6 +46,7 @@ restic() {
     return "${REMOTE_FAILURE:-0}"
   elif [[ "$args" == *' backup '* ]]; then
     printf '%s\n' "$@" > "$TEST_ROOT/restic-args"
+    [ ! -e "$DATA_ROOT/maintenance/status.json" ]
     echo upload >> "$TEST_ROOT/events"
     [ "$(tail -n 2 "$TEST_ROOT/events" | head -n 1)" = unpause ]
     [[ "$args" == *" --exclude $TEST_ROOT/secrets/restic_password "* ]]
@@ -82,6 +84,13 @@ UPLOAD_FAILURE=1 run_failure
 DUMP_FAILURE=1 run_failure
 [ "$(tail -n 1 "$TEST_ROOT/events")" = unpause ]
 if grep -q upload "$TEST_ROOT/events"; then exit 1; fi
+[ ! -e "$TEST_ROOT/data/maintenance/status.json" ]
+grep -Eq 'Backup pause ended at .*duration_seconds=[0-9]+' "$TEST_ROOT/error"
+: > "$TEST_ROOT/events"
+UNPAUSE_FAILURE=1 run_failure
+[ -s "$TEST_ROOT/data/maintenance/status.json" ]
+if grep -q upload "$TEST_ROOT/events"; then exit 1; fi
+rm "$TEST_ROOT/data/maintenance/status.json"
 : > "$TEST_ROOT/events"
 RETENTION_FAILURE=1 run_failure
 [ "$(tail -n 1 "$TEST_ROOT/events")" = retention ]

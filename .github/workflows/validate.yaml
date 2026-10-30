@@ -42,6 +42,9 @@ jobs:
       - name: Test off-host backup failure handling
         run: bash scripts/test-backup.sh
 
+      - name: Test maintenance status without the API
+        run: bash scripts/test-maintenance.sh
+
       - name: Verify encrypted backup restore
         run: docker run --rm --entrypoint /bin/sh -v "$PWD/scripts/test-restic.sh:/test.sh:ro" restic/restic:0.16.4 /test.sh
 

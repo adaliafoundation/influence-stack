@@ -175,7 +175,9 @@ sudo systemctl enable --now influence-backup.timer
 systemctl list-timers influence-backup.timer
 ```
 
-Backups run daily at 03:00 UTC with up to 15 minutes of jitter. Persistent scheduling
+Backups run daily at 07:00 UTC with up to 15 minutes of jitter. This is 02:00 EST /
+03:00 EDT in the US and 08:00 CET / 09:00 CEST in Central Europe. The UTC schedule
+stays fixed across daylight saving changes. Persistent scheduling
 runs a missed backup after the host comes back online. The service runs as the
 operator, using that account's SSH configuration and Docker group access.
 
@@ -273,3 +275,37 @@ when the recovery exercise is complete.
 `check` validates repository structure; `check --read-data` also reads stored data.
 Neither replaces a Mongo restore test. Keep the Restic password and SSH recovery
 access outside the server; the password is deliberately excluded from snapshots.
+
+## Backup pause status and timing
+
+The backup logs `Backup pause starting at` and `Backup pause ended at` with UTC
+timestamps and `duration_seconds`. The elapsed time covers maintenance publication,
+pausing writers, dumping/compressing MongoDB, and resuming writers; it excludes
+remote upload and retention. Inspect these messages in the backup service journal.
+
+Caddy serves unauthenticated `GET /maintenance` on the API domain independently of
+the application. Responses are JSON with `Cache-Control: no-store` and public CORS
+access (poll without credentials):
+
+```json
+{"active":true,"reason":"backup","startedAt":"2026-10-30T07:00:00Z"}
+```
+
+Outside the pause it returns `{"active":false}`. Both responses use HTTP 200.
+Clients can poll every few seconds, show a maintenance notice while active, and
+refresh data after the pause ends. Request failures must remain connection errors,
+not be interpreted as an inactive maintenance status. This endpoint reports the
+backup pause, not application health or completion of worker catch-up. Client UI
+integration and advance warnings are separate from this endpoint.
+
+Status is published atomically before pausing writers and removed after a
+successful unpause, including on dump failure or a handled termination signal.
+If unpause fails, status remains active. A forced kill or host crash can also leave
+a stale marker: verify writers are unpaused before removing
+`${DATA_ROOT}/maintenance/status.json` manually.
+
+For existing deployments, create `${DATA_ROOT}/maintenance` owned by the stack
+operator before recreating Caddy with the updated Compose mount and Caddyfile.
+New hosts create this directory through `./stack prepare-host`. An externally
+managed proxy must mount this directory read-only and implement the same
+`/maintenance` route; the stack does not configure external proxies automatically.

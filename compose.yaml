@@ -78,6 +78,7 @@ services:
       - "443:443/udp"
     volumes:
       - ./config/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ${DATA_ROOT:-/influencedata}/maintenance:/srv/maintenance:ro
       - ${DATA_ROOT:-/influencedata}/caddy-data:/data
       - ${DATA_ROOT:-/influencedata}/caddy-config:/config
     networks:
