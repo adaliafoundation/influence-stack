@@ -900,7 +900,7 @@ prepare_host() {
   owner_group="$(id -u):$(id -g)"
   info "Preparing persistent storage under $DATA_ROOT"
   sudo install -d -m 0750 -o "$(id -u)" -g "$(id -g)" \
-    "$DATA_ROOT" "$DATA_ROOT/juno-data" "$DATA_ROOT/downloads" "$DATA_ROOT/backups"
+    "$DATA_ROOT" "$DATA_ROOT/juno-data" "$DATA_ROOT/downloads" "$DATA_ROOT/backups" "$DATA_ROOT/maintenance"
   sudo install -d -m 0750 -o 999 -g 999 "$DATA_ROOT/mongodb-data" "$DATA_ROOT/redis-data"
   sudo install -d -m 0750 -o 1000 -g 0 "$DATA_ROOT/elasticsearch-data"
   sudo install -d -m 0750 -o 1000 -g 1000 "$DATA_ROOT/caddy-data" "$DATA_ROOT/caddy-config"
@@ -1456,6 +1456,25 @@ backup_stack() (
       backup_paths+=("$extra_path")
     done < "$extra_paths_file"
   fi
+  publish_backup_maintenance() {
+    local temporary
+    temporary="$(mktemp "$maintenance_dir/.status.XXXXXX")"
+    printf '{"active":true,"reason":"backup","startedAt":"%s"}\n' \
+      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$temporary"
+    chmod 644 "$temporary"
+    mv -f "$temporary" "$maintenance_dir/status.json"
+  }
+
+  resume_backup_writers() {
+    if ! compose --profile indexer --profile auditor unpause "${active_writers[@]}"; then
+      echo "Error: Backup writers could not resume; maintenance status retained" >&2
+      return 1
+    fi
+    rm -f "$maintenance_dir/status.json"
+    writers_paused=0
+    info "Backup pause ended at $(date -u +%Y-%m-%dT%H:%M:%SZ); duration_seconds=$((SECONDS - pause_started))"
+  }
+
   local writers=(
     influence-server
     influence-indexer
@@ -1468,6 +1487,10 @@ backup_stack() (
   )
   local active_writers=()
   local writers_paused=0
+  local pause_started=0
+  local maintenance_dir="$DATA_ROOT/maintenance"
+  mkdir -p "$maintenance_dir"
+  chmod 755 "$maintenance_dir"
   local writer
   for writer in "${writers[@]}"; do
     if [ -n "$(compose ps -q "$writer")" ]; then
@@ -1476,11 +1499,13 @@ backup_stack() (
   done
   info "Creating $output"
   if [ "${#active_writers[@]}" -gt 0 ]; then
-    info "Briefly pausing database writers for a consistent dump"
+    pause_started=$SECONDS
+    info "Backup pause starting at $(date -u +%Y-%m-%dT%H:%M:%SZ)"
     writers_paused=1
-    trap 'if [ "$writers_paused" -eq 1 ]; then compose --profile indexer --profile auditor unpause "${active_writers[@]}" || true; fi' EXIT
+    trap 'if [ "$writers_paused" -eq 1 ]; then resume_backup_writers; fi' EXIT
     trap 'exit 130' INT
     trap 'exit 143' TERM
+    publish_backup_maintenance
     compose --profile indexer --profile auditor pause "${active_writers[@]}"
   fi
   # The quoted script expands inside mongo-tools; only the output filename is
@@ -1498,8 +1523,7 @@ backup_stack() (
   fi
   chmod 600 "$output"
   if [ "${#active_writers[@]}" -gt 0 ]; then
-    compose --profile indexer --profile auditor unpause "${active_writers[@]}"
-    writers_paused=0
+    resume_backup_writers
   fi
   trap - EXIT INT TERM
   if ! backup_restic backup --tag "$BACKUP_TAG" --host "$BACKUP_HOST" \
