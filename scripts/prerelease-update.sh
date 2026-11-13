@@ -108,6 +108,7 @@ prerelease_update() (
     influence-event-auditor influence-agreement-auditor
   )
   if [ "${ENABLE_CLIENT:-0}" = 1 ]; then services+=(influence-client); fi
+  if [ "${ENABLE_PRIVATE_DATA:-0}" = 1 ]; then services+=(influence-private-data); fi
   compose --profile indexer --profile auditor up -d --no-deps "${services[@]}"
   wait_for_required_application_health
   sync_notifications

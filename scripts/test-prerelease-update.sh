@@ -120,3 +120,9 @@ jq -e '.[0] | (."http-methods" == ["POST"]) and
   "$STATE_DIR/prerelease-hooks.json" >/dev/null
 [ "$(file_permissions "$STATE_DIR/prerelease-hooks.json")" = 600 ]
 echo 'Prerelease sequencing, no-op, failure blocking, production guard, and webhook authentication passed'
+
+reset_fixture
+printf '\nENABLE_PRIVATE_DATA=1\n' >> "$ENV_FILE"
+(prerelease_update)
+grep -q 'up -d --no-deps .*influence-private-data' "$TEST_ROOT/actions"
+echo 'Enabled retention workers are included in prerelease updates'

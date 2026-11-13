@@ -1,4 +1,9 @@
 services:
+  influence-private-data:
+    volumes: !reset []
+    tmpfs:
+      - /data/private-records:size=16m,mode=0700,uid=${HOST_UID:-1000},gid=${HOST_GID:-1000}
+
   influence-tools:
     image: ${INFLUENCE_SERVER_IMAGE:?Set INFLUENCE_SERVER_IMAGE to an immutable image digest}
     platform: linux/amd64
