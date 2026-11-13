@@ -1,0 +1,9 @@
+services:
+  caddy:
+    environment:
+      PRIVATE_DATA_DOMAIN: ${PRIVATE_DATA_DOMAIN:?Set PRIVATE_DATA_DOMAIN}
+    volumes:
+      - ./config/Caddyfile.private-data:/etc/caddy/private-data/site.caddy:ro
+    depends_on:
+      influence-private-data:
+        condition: service_healthy

@@ -68,6 +68,9 @@ jobs:
       - name: Test optional client configuration
         run: bash scripts/test-client-compose.sh
 
+      - name: Test optional private-data peer configuration
+        run: bash scripts/test-private-data.sh
+
       - name: Test production and prerelease configuration
         run: bash scripts/test-environments.sh
 

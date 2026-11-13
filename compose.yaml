@@ -411,6 +411,41 @@ services:
       <<: *service-labels
       com.influenceth.stack.component: notifications
 
+  influence-private-data:
+    <<: *app-base
+    profiles: [private-data]
+    command: ["node", "src/workers/privateData.mjs"]
+    environment:
+      NODE_ENV: ${STACK_ENVIRONMENT:-production}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      PRIVATE_DATA_DIRECTORY: /data/private-records
+      PRIVATE_DATA_LISTEN: /ip4/0.0.0.0/tcp/15179/ws
+      PRIVATE_DATA_ANNOUNCE: /dns4/${PRIVATE_DATA_DOMAIN:-private-data.invalid}/tcp/443/wss
+      PRIVATE_DATA_REPLICATION_PEERS: ${PRIVATE_DATA_REPLICATION_PEERS:-}
+      PRIVATE_DATA_MAX_RECORDS: ${PRIVATE_DATA_MAX_RECORDS:-10000}
+      PRIVATE_DATA_MAX_RECORDS_PER_PEER: ${PRIVATE_DATA_MAX_RECORDS_PER_PEER:-500}
+    secrets: []
+    depends_on: {}
+    networks: [edge, outbound]
+    volumes:
+      - ${DATA_ROOT:-/influencedata}/private-data:/data/private-records
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - >-
+          const s = require('node:net').connect(15179, '127.0.0.1', () => s.end());
+          s.setTimeout(3000, () => { s.destroy(); process.exitCode = 1; });
+          s.on('error', () => { process.exitCode = 1; });
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+    labels:
+      <<: *service-labels
+      com.influenceth.stack.component: private-data
+
   influence-tools:
     <<: *app-base
     restart: "no"
