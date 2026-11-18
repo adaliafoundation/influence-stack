@@ -21,6 +21,7 @@ Stable aliases on that network are derived from `COMPOSE_PROJECT_NAME`:
 | --- | --- |
 | API and images | `influence-prerelease-api:3001` |
 | Optional client | `influence-prerelease-client:3000` |
+| Optional private-data retention peer | `influence-prerelease-private-data:15179` |
 | Juno RPC | `influence-prerelease-juno:6060` |
 
 MongoDB, Redis, and Elasticsearch remain on the internal data network. The API
@@ -54,3 +55,18 @@ for the fresh-install setup. Without automatic deployment, omit the hook route.
 Integration tests override the external edge network with a temporary private
 network. They do not join the live proxy network or advertise test containers to
 the real proxy. Public routing, TLS, and browser acceptance checks remain separate.
+
+## Private-data retention route
+
+When `ENABLE_PRIVATE_DATA=1`, point `PRIVATE_DATA_DOMAIN` at the proxy and add a
+site using your actual hostname and Compose project name:
+
+```caddyfile
+private-data.example.com {
+    reverse_proxy influence-prerelease-private-data:15179
+}
+```
+
+The proxy must share `EDGE_NETWORK` with the worker and forward WebSocket
+upgrades. Port 15179 stays inside Docker; public clients connect over WSS on 443.
+Validate and reload the external proxy through its existing configuration process.

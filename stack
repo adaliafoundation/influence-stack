@@ -115,6 +115,9 @@ compose_files() {
   if [ "${ENABLE_CLIENT:-0}" = "1" ]; then
     COMPOSE_ARGS+=(-f "${STACK_ROOT}/compose.client.yaml")
   fi
+  if [ "${ENABLE_PRIVATE_DATA:-0}" = "1" ]; then
+    COMPOSE_ARGS+=(--profile private-data -f "${STACK_ROOT}/compose.private-data.yaml")
+  fi
   if [ "${ENABLE_PRERELEASE_UPDATES:-0}" = "1" ]; then
     COMPOSE_ARGS+=(-f "${STACK_ROOT}/compose.webhook.yaml")
   fi
@@ -252,7 +255,7 @@ validate_image_pin() {
 
 validate_application_images() {
   local rendered
-  rendered="$(compose --profile indexer --profile auditor --profile notifications --profile tools config --format json)"
+  rendered="$(compose --profile indexer --profile auditor --profile notifications --profile tools --profile private-data config --format json)"
   jq -e --arg image "$INFLUENCE_SERVER_IMAGE" '
     [
       .services["influence-server"],
@@ -263,7 +266,8 @@ validate_application_images() {
       .services["influence-event-auditor"],
       .services["influence-agreement-auditor"],
       .services["influence-notifications"],
-      .services["influence-tools"]
+      .services["influence-tools"],
+      .services["influence-private-data"]
     ] | all(.image == $image)
   ' <<<"$rendered" >/dev/null \
     || die "Every Influence service must use INFLUENCE_SERVER_IMAGE"
@@ -281,9 +285,11 @@ deployment_fingerprint() {
     compose.external-edge.yaml
     compose.external-client.yaml
     compose.webhook.yaml
+    compose.private-data.yaml
     config/Caddyfile
     config/Caddyfile.client
     config/Caddyfile.webhook
+    config/Caddyfile.private-data
     scripts/juno-entrypoint.sh
     scripts/backup.sh
     scripts/mongo-init-app-user.sh
@@ -294,7 +300,7 @@ deployment_fingerprint() {
     scripts/prerelease-update.sh
   )
   {
-    compose --profile indexer --profile auditor --profile notifications --profile tools config --format json
+    compose --profile indexer --profile auditor --profile notifications --profile tools --profile private-data config --format json
     for file in "${files[@]}"; do
       printf '\0%s\0' "$file"
       command cat "${STACK_ROOT}/${file}"
@@ -396,6 +402,16 @@ validate_juno_configuration() {
 
 validate_configuration() {
   validate_juno_configuration
+  if [ "${ENABLE_PRIVATE_DATA:-0}" = "1" ]; then
+    if [[ ! "${PRIVATE_DATA_DOMAIN:-}" =~ ^[A-Za-z0-9.-]+$ ]] \
+      || [[ "$PRIVATE_DATA_DOMAIN" == *example.com* ]]; then
+      die "Set PRIVATE_DATA_DOMAIN to the retention peer's public hostname"
+    fi
+    if [ "$PRIVATE_DATA_DOMAIN" = "$API_DOMAIN" ] || [ "$PRIVATE_DATA_DOMAIN" = "${CLIENT_DOMAIN:-}" ]; then
+      die "PRIVATE_DATA_DOMAIN must differ from API_DOMAIN and CLIENT_DOMAIN"
+    fi
+    [ -d "$DATA_ROOT/private-data" ] || die "Run ./stack prepare-host to create private-data storage"
+  fi
   if [ "${ENABLE_CLIENT:-0}" = "1" ]; then
     validate_image_pin INFLUENCE_CLIENT_IMAGE
     if [[ ! "${CLIENT_DOMAIN:-}" =~ ^[A-Za-z0-9.-]+$ ]] || [[ "$CLIENT_DOMAIN" == *example.com* ]]; then
@@ -534,6 +550,9 @@ wait_for_required_application_health() {
   wait_for_health influence-server 600
   if [ "${ENABLE_CLIENT:-0}" = "1" ]; then
     wait_for_health influence-client 300
+  fi
+  if [ "${ENABLE_PRIVATE_DATA:-0}" = "1" ]; then
+    wait_for_health influence-private-data 300
   fi
 }
 
@@ -901,6 +920,9 @@ prepare_host() {
   info "Preparing persistent storage under $DATA_ROOT"
   sudo install -d -m 0750 -o "$(id -u)" -g "$(id -g)" \
     "$DATA_ROOT" "$DATA_ROOT/juno-data" "$DATA_ROOT/downloads" "$DATA_ROOT/backups" "$DATA_ROOT/maintenance"
+  if [ "${ENABLE_PRIVATE_DATA:-0}" = "1" ]; then
+    sudo install -d -m 0700 -o "${HOST_UID:-$(id -u)}" -g "${HOST_GID:-$(id -g)}" "$DATA_ROOT/private-data"
+  fi
   sudo install -d -m 0750 -o 999 -g 999 "$DATA_ROOT/mongodb-data" "$DATA_ROOT/redis-data"
   sudo install -d -m 0750 -o 1000 -g 0 "$DATA_ROOT/elasticsearch-data"
   sudo install -d -m 0750 -o 1000 -g 1000 "$DATA_ROOT/caddy-data" "$DATA_ROOT/caddy-config"
@@ -1074,6 +1096,12 @@ EOF
     compose up -d --no-deps influence-client
     wait_for_health influence-client 300
     compose exec -T influence-client node < "${STACK_ROOT}/scripts/check-client-image.js"
+  fi
+  if [ "${ENABLE_PRIVATE_DATA:-0}" = "1" ]; then
+    info "Testing the encrypted retention worker with disposable storage"
+    compose pull influence-private-data
+    compose up -d --no-deps influence-private-data
+    wait_for_health influence-private-data 300
   fi
   compose down --volumes --remove-orphans
   rm -rf -- "$integration_secrets_dir"
