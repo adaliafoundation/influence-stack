@@ -17,7 +17,6 @@
 }
 
 import /etc/caddy/client/*.caddy
-import /etc/caddy/private-data/*.caddy
 
 {$API_DOMAIN} {$IMAGES_DOMAIN} {
 	encode zstd gzip
