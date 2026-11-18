@@ -174,6 +174,58 @@ A blank URL disables notification; releases can still publish normally. Set the
 URL only after the receiver and routing are ready. Test `./stack prerelease-update`
 manually once; it must pass the same integration and health gates.
 
+## Include the private-data retention worker
+
+Deploy a server image containing `src/workers/privateData.mjs` before enabling
+this optional service. In the host's `.env`, set:
+
+```dotenv
+ENABLE_PRIVATE_DATA=1
+PRIVATE_DATA_DOMAIN=private-data.YOUR_DOMAIN
+```
+
+Point that hostname to the proxy. Managed Caddy configures HTTPS/WebSocket
+forwarding automatically. With an external proxy, add the route described in
+[External proxy](external-proxy.md). The worker uses the same immutable server
+image as the API and indexers, with persistent storage at `DATA_ROOT/private-data`.
+
+For an existing installation, stop the webhook receiver under its deployment
+lock before updating the checkout or configuration:
+
+```sh
+flock .state/prerelease-update.lock -c 'sudo systemctl stop influence-prerelease-webhook.service'
+```
+
+Preserve any existing private-data directory and its `peer.seed`; that identity
+is used by existing browser retention grants. Then reconcile the full stack:
+
+```sh
+./stack prepare-host
+./stack config
+./stack integration-test
+./stack deploy
+./stack status
+./stack logs influence-private-data
+```
+
+This initial `deploy` is necessary even if the server image has not changed:
+`prerelease-update` skips unchanged image pairs. Integration tests use disposable
+worker storage and do not modify the live identity or retained records.
+
+Copy the full public WSS address printed by the worker, including `/p2p/PEER_ID`,
+into `REACT_APP_APP_PRIVATEDATAPEERS` in `client.env`. Rerun integration and deploy
+after changing client configuration. Include the private-data directory in the
+host's backup paths. Once the public route and browser retention work, resume:
+
+```sh
+sudo systemctl restart influence-prerelease-webhook.service
+./stack prerelease-update
+```
+
+With `ENABLE_PRIVATE_DATA=1`, subsequent server image updates also recreate the
+private-data worker and wait for its health check. Its persistent records and
+identity remain on disk across image updates.
+
 ## Operations and failures
 
 The webhook acknowledges that deployment was queued, not that it succeeded.

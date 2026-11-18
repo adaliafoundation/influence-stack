@@ -21,6 +21,7 @@ validate_application_images() { :; }
 deployment_fingerprint() { printf '%s:%s:%s' "$INFLUENCE_SERVER_IMAGE" "${ENABLE_CLIENT:-0}" "${INFLUENCE_CLIENT_IMAGE:-}"; }
 wait_for_health() {
   if [ "$1" = influence-client ] && [ "${FAIL_CLIENT_HEALTH:-0}" = 1 ]; then return 1; fi
+  if [ "$1" = influence-private-data ] && [ "${FAIL_PEER_HEALTH:-0}" = 1 ]; then return 1; fi
 }
 compose() {
   case "$*" in
@@ -51,6 +52,12 @@ grep -q '^up -d --no-deps influence-client$' "$TEST_ROOT/actions"
 grep -q '^client-check$' "$TEST_ROOT/actions"
 cmp "$REPO_ROOT/scripts/check-client-image.js" "$TEST_ROOT/client-probe"
 (load_env; require_integration_test)
+# The peer must be tested before deployment, using the smoke storage override.
+printf '\nENABLE_PRIVATE_DATA=1\n' >> "$ENV_FILE"
+: > "$TEST_ROOT/actions"
+(integration_test)
+grep -q '^pull influence-private-data$' "$TEST_ROOT/actions"
+grep -q '^up -d --no-deps influence-private-data$' "$TEST_ROOT/actions"
 # The real receipt check must reject changes to the client digest as well.
 set +e
 (set -e; load_env; INFLUENCE_CLIENT_IMAGE="$candidate"; require_integration_test) > "$TEST_ROOT/error" 2>&1
@@ -73,6 +80,7 @@ FAIL_CLIENT=1 expect_failure
 grep -q '^down --volumes --remove-orphans$' "$TEST_ROOT/actions"
 FAIL_CLIENT_HEALTH=1 expect_failure
 grep -q '^down --volumes --remove-orphans$' "$TEST_ROOT/actions"
+FAIL_PEER_HEALTH=1 expect_failure
 FAIL_SERVER=1 expect_failure
 grep -q '^down --volumes --remove-orphans$' "$TEST_ROOT/actions"
 expect_failure one two

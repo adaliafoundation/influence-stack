@@ -1,0 +1,4 @@
+{$PRIVATE_DATA_DOMAIN} {
+	reverse_proxy influence-private-data:15179
+	import access_log
+}
