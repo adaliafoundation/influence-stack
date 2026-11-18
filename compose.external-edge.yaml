@@ -7,11 +7,6 @@ services:
       edge:
         aliases: ["${COMPOSE_PROJECT_NAME:-influence-production}-api"]
 
-  influence-private-data:
-    networks:
-      edge:
-        aliases: ["${COMPOSE_PROJECT_NAME:-influence-production}-private-data"]
-
   juno:
     networks:
       edge:
